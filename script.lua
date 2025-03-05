@@ -25,7 +25,6 @@ local currentPage = 1
 local teleportLoopEnabled = false
 
 local infiniteJump = false
-local airSwimEnabled = false  -- 空中で泳ぐ機能
 
 ------------------------------------------------
 -- 背景アニメーション（虹色アニメーション）
@@ -239,36 +238,17 @@ runService.RenderStepped:Connect(function(delta)
         local offset = 1.5
         local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
         player.Character.HumanoidRootPart.CFrame = CFrame.new(newPos, targetHRP.Position)
-        -- カメラは常にCustom（つまり、Teleport Loop中も一人称視点にならない）
+        camera.CFrame = CFrame.new(camera.CFrame.Position, targetHRP.Position)
     end
 end)
 
 ------------------------------------------------
 -- カメラ更新処理 (RenderStepped)
--- 常にカメラはCustomにする（Teleport Loop中もカメラ設定を変更しない）
+-- 常にカメラはCustomにする（Teleport Loop中も一人称視点にならない）
 ------------------------------------------------
 runService.RenderStepped:Connect(function(delta)
     local cam = workspace.CurrentCamera
     cam.CameraType = Enum.CameraType.Custom
-end)
-
-------------------------------------------------
--- Air Swim処理 (RenderStepped)
--- 空中で泳ぐために、重力分の上向きの力を与えるBodyForceを追加
-------------------------------------------------
-runService.RenderStepped:Connect(function(delta)
-    if airSwimEnabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = player.Character.HumanoidRootPart
-        local bf = hrp:FindFirstChild("AirSwimForce") or Instance.new("BodyForce", hrp)
-        bf.Name = "AirSwimForce"
-        bf.Force = Vector3.new(0, hrp.AssemblyMass * workspace.Gravity, 0)
-    else
-        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local hrp = player.Character.HumanoidRootPart
-            local bf = hrp:FindFirstChild("AirSwimForce")
-            if bf then bf:Destroy() end
-        end
-    end
 end)
 
 ------------------------------------------------
@@ -568,20 +548,6 @@ local function createGUI()
         else
             disableESP()
         end
-    end)
-
-    -- (10) Air Swim toggle button
-    local airSwimButton = Instance.new("TextButton", mainPage)
-    airSwimButton.Size = UDim2.new(0,250,0,50)
-    airSwimButton.Text = "Air Swim: OFF"
-    airSwimButton.BackgroundColor3 = Color3.new(1,0,0)
-    airSwimButton.TextColor3 = Color3.new(1,1,1)
-    airSwimButton.LayoutOrder = 10
-    local airSwimButtonCorner = Instance.new("UICorner", airSwimButton)
-    airSwimButtonCorner.CornerRadius = UDim.new(0,8)
-    airSwimButton.MouseButton1Click:Connect(function()
-        airSwimEnabled = not airSwimEnabled
-        airSwimButton.Text = airSwimEnabled and "Air Swim: ON" or "Air Swim: OFF"
     end)
 
     -- Teleportページ

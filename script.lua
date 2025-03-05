@@ -27,7 +27,7 @@ local teleportLoopEnabled = false
 local infiniteJump = false
 
 ------------------------------------------------
--- 背景アニメーション関数
+-- 背景アニメーション（虹色アニメーション）
 ------------------------------------------------
 local function animateRainbowBackground(guiMain)
     local gradient = guiMain:FindFirstChildOfClass("UIGradient")
@@ -107,7 +107,7 @@ end
 local function teleportToPlayer(targetPlayer)
     if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = targetPlayer.Character.HumanoidRootPart
-        local offset = 1.5  -- ループ中も1.5スタッドの距離
+        local offset = 1.5
         local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
         player.Character.HumanoidRootPart.CFrame = CFrame.new(newPos, targetHRP.Position)
         camera.CFrame = CFrame.new(camera.CFrame.Position, targetHRP.Position)
@@ -115,7 +115,7 @@ local function teleportToPlayer(targetPlayer)
 end
 
 ------------------------------------------------
--- Fキーで前進する機能
+-- F前進機能
 ------------------------------------------------
 userInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
@@ -225,10 +225,11 @@ end)
 
 ------------------------------------------------
 -- Teleport Loop処理 (RenderStepped)
--- 対象プレイヤーのHumanoidRootPartを基準にテレポート（以前の状態に戻す）
+-- 対象プレイヤーのHumanoidRootPartを基準に、正面に1.5スタッドで追従
 ------------------------------------------------
 runService.RenderStepped:Connect(function(delta)
-    if teleportLoopEnabled and selectedTeleportPlayer 
+    if teleportLoopEnabled 
+       and selectedTeleportPlayer 
        and selectedTeleportPlayer.Character 
        and selectedTeleportPlayer.Character:FindFirstChild("HumanoidRootPart")
        and player.Character 
@@ -238,6 +239,25 @@ runService.RenderStepped:Connect(function(delta)
         local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
         player.Character.HumanoidRootPart.CFrame = CFrame.new(newPos, targetHRP.Position)
         camera.CFrame = CFrame.new(camera.CFrame.Position, targetHRP.Position)
+    end
+end)
+
+------------------------------------------------
+-- カメラ更新処理 (RenderStepped)
+-- Teleport Loopがオンの場合のカメラ更新のみ（それ以外はCustom）
+------------------------------------------------
+runService.RenderStepped:Connect(function(delta)
+    local cam = workspace.CurrentCamera
+    if teleportLoopEnabled and selectedTeleportPlayer 
+       and selectedTeleportPlayer.Character 
+       and selectedTeleportPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        cam.CameraType = Enum.CameraType.Scriptable
+        local targetHRP = selectedTeleportPlayer.Character.HumanoidRootPart
+        local offset = 1.5
+        local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
+        cam.CFrame = CFrame.new(newPos, targetHRP.Position)
+    else
+        cam.CameraType = Enum.CameraType.Custom
     end
 end)
 
@@ -333,8 +353,19 @@ local function createGUI()
         ColorSequenceKeypoint.new(0.75, Color3.fromRGB(75,0,130)),
         ColorSequenceKeypoint.new(1, Color3.fromRGB(238,130,238))
     })
-    -- 背景アニメーション開始
     animateRainbowBackground(guiMain)
+
+    -- 右下に常に表示する画像
+    if not screenGui:FindFirstChild("LogoImage") then
+        local logo = Instance.new("ImageLabel")
+        logo.Name = "LogoImage"
+        logo.Parent = screenGui
+        logo.Size = UDim2.new(0,50,0,50)
+        logo.AnchorPoint = Vector2.new(1,1)
+        logo.Position = UDim2.new(1, -10, 1, -10)
+        logo.BackgroundTransparency = 1
+        logo.Image = "rbxassetid://71061330924177"
+    end
 
     -- ヘッダー（タイトル）
     local headerFrame = Instance.new("Frame", guiMain)
@@ -700,7 +731,7 @@ local function createGUI()
     tabMain.BackgroundColor3 = Color3.new(0,0,0)
     tabTeleport.BackgroundColor3 = Color3.new(0.2,0.2,0.2)
 
-    -- MキーでGUIの表示切替
+    -- MキーでGUI表示切替
     userInputService.InputBegan:Connect(function(input, gameProcessed)
         if not gameProcessed and input.KeyCode == Enum.KeyCode.M then
             guiMain.Visible = not guiMain.Visible
@@ -732,5 +763,43 @@ userInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.N then
         userInputService.MouseIconEnabled = not userInputService.MouseIconEnabled
+    end
+end)
+
+------------------------------------------------
+-- Teleport Loop処理 (RenderStepped)
+-- 対象プレイヤーのHumanoidRootPartを基準に、正面に1.5スタッドで追従
+------------------------------------------------
+runService.RenderStepped:Connect(function(delta)
+    if teleportLoopEnabled 
+       and selectedTeleportPlayer 
+       and selectedTeleportPlayer.Character 
+       and selectedTeleportPlayer.Character:FindFirstChild("HumanoidRootPart")
+       and player.Character 
+       and player.Character:FindFirstChild("HumanoidRootPart") then
+        local targetHRP = selectedTeleportPlayer.Character.HumanoidRootPart
+        local offset = 1.5
+        local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
+        player.Character.HumanoidRootPart.CFrame = CFrame.new(newPos, targetHRP.Position)
+        camera.CFrame = CFrame.new(camera.CFrame.Position, targetHRP.Position)
+    end
+end)
+
+------------------------------------------------
+-- カメラ更新処理 (RenderStepped)
+-- Teleport Loopがオンの場合のカメラ更新のみ（それ以外はCustom）
+------------------------------------------------
+runService.RenderStepped:Connect(function(delta)
+    local cam = workspace.CurrentCamera
+    if teleportLoopEnabled and selectedTeleportPlayer 
+       and selectedTeleportPlayer.Character 
+       and selectedTeleportPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        cam.CameraType = Enum.CameraType.Scriptable
+        local targetHRP = selectedTeleportPlayer.Character.HumanoidRootPart
+        local offset = 1.5
+        local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
+        cam.CFrame = CFrame.new(newPos, targetHRP.Position)
+    else
+        cam.CameraType = Enum.CameraType.Custom
     end
 end)

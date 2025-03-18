@@ -345,12 +345,12 @@ local function createGUI()
     })
     animateRainbowBackground(guiMain)
 
-    -- 右下に常に表示する画像
+    -- 右下に常に表示する画像（サイズ150×150）
     if not screenGui:FindFirstChild("LogoImage") then
         local logo = Instance.new("ImageLabel")
         logo.Name = "LogoImage"
         logo.Parent = screenGui
-        logo.Size = UDim2.new(0,50,0,50)
+        logo.Size = UDim2.new(0,150,0,150)
         logo.AnchorPoint = Vector2.new(1,1)
         logo.Position = UDim2.new(1, -10, 1, -10)
         logo.BackgroundTransparency = 1

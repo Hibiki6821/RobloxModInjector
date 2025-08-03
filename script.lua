@@ -1,782 +1,775 @@
--- ローカルプレイヤーと各サービスの取得
-local player = game.Players.LocalPlayer
-local userInputService = game:GetService("UserInputService")
-local runService = game:GetService("RunService")
+--[[
+    Script: MOD INJECTOR (Fluent Edition)
+    Description: A feature-rich script for Roblox using the Fluent GUI library.
+    Author: Gemini
+    Version: 3.6
+    Date: 2025-08-04
+]]
+
+--// SERVICES //--
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local TeleportService = game:GetService("TeleportService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+--// PLAYER & CAMERA //--
+local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
+local mouse = player:GetMouse()
 
--- 各機能用の変数
-local isRunning = false
-local multiplier = 2  -- F前進の移動速度
-local forwardMovementEnabled = false
-
-local freeFlyEnabled = false
-local freeFlySpeed = 50
-
-local noclipEnabled = false
-local spinEnabled = false
-local spinSpeed = 50  -- Spin回転速度（ラジアン/秒）
-
-local espEnabled = false
-
--- テレポート機能用の変数
-local selectedTeleportPlayer = nil
-local playersPerPage = 5
-local currentPage = 1
-local teleportLoopEnabled = false
-
-local infiniteJump = false
-
-------------------------------------------------
--- 背景アニメーション（虹色アニメーション・動的）
-------------------------------------------------
-local function animateRainbowBackground(guiMain)
-    local gradient = guiMain:FindFirstChildOfClass("UIGradient")
-    if not gradient then
-        gradient = Instance.new("UIGradient", guiMain)
-    end
-    local t = 0
-    runService.RenderStepped:Connect(function(delta)
-        t = t + delta
-        gradient.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromHSV(t % 1, 1, 1)),
-            ColorSequenceKeypoint.new(0.15, Color3.fromHSV((t + 0.15) % 1, 1, 1)),
-            ColorSequenceKeypoint.new(0.3, Color3.fromHSV((t + 0.3) % 1, 1, 1)),
-            ColorSequenceKeypoint.new(0.45, Color3.fromHSV((t + 0.45) % 1, 1, 1)),
-            ColorSequenceKeypoint.new(0.6, Color3.fromHSV((t + 0.6) % 1, 1, 1)),
-            ColorSequenceKeypoint.new(0.75, Color3.fromHSV((t + 0.75) % 1, 1, 1)),
-            ColorSequenceKeypoint.new(1, Color3.fromHSV((t + 1) % 1, 1, 1))
-        })
+--// FLUENT LIBRARY //--
+-- Fluentライブラリを読み込みます。これはExecutorに直接配置するか、URLから読み込む必要があります。
+local function loadLibrary(url, name)
+    local success, result = pcall(function()
+        return loadstring(game:HttpGet(url, true))()
     end)
+    if not success or not result then
+        warn(string.format("Failed to load library '%s'. Error: %s", name, tostring(result)))
+        game.StarterGui:SetCore("SendNotification", {
+            Title = "Library Error",
+            Text = string.format("Failed to load '%s'. The script may not work correctly.", name),
+            Duration = 10
+        })
+        return nil
+    end
+    return result
 end
 
+-- ユーザー提供の動作するURLに更新
+local Fluent = loadLibrary("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua", "Fluent")
+-- Fluent本体の読み込みに失敗した場合、スクリプトを停止
+if not Fluent then return end
+
+local SaveManager = loadLibrary("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua", "SaveManager")
+local InterfaceManager = loadLibrary("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua", "InterfaceManager")
+
+--// CONFIGURATION & STATE //--
+-- UIの状態はFluent.Optionsで管理します。
+-- このstateテーブルは、UIに直接関連しない内部的な状態のみを保持します。
+local state = {
+    selectedTeleportPlayerName = nil,
+    isSpectating = false,
+    isRunning = false,
+    waterPart = nil,
+    -- CutGrass States
+    cutGrass_AntiTeleportConnections = {},
+    cutGrass_AutoCollectCoroutine = nil,
+    cutGrass_AutoGrassDeleteCoroutine = nil,
+    cutGrass_ESPHighlights = {},
+    cutGrass_ChestESPConnections = {},
+    cutGrass_PlayerESPConnections = {},
+    cutGrass_ChestESPUpdateCoroutine = nil,
+    cutGrass_PlayerESPUpdateCoroutine = nil,
+    cutGrass_HitboxLoop = nil,
+    cutGrass_OriginalGrassTransparencies = {},
+    cutGrass_GrassAddedConnections = {}
+}
+
+--// FUNCTIONS //--
+
 ------------------------------------------------
--- ESP機能：足元に各プレイヤーの名前を表示
+-- Feature Implementations
 ------------------------------------------------
+local Options = Fluent.Options
+
 local function createESP(character)
     local root = character:FindFirstChild("HumanoidRootPart")
-    if root and not root:FindFirstChild("ESP") then
-        local billboard = Instance.new("BillboardGui")
-        billboard.Name = "ESP"
-        billboard.Parent = root
-        billboard.Size = UDim2.new(0,100,0,50)
-        billboard.AlwaysOnTop = true
-        billboard.StudsOffset = Vector3.new(0, -3, 0)
-        local textLabel = Instance.new("TextLabel", billboard)
-        textLabel.Size = UDim2.new(1,0,1,0)
-        textLabel.BackgroundTransparency = 1
-        textLabel.TextColor3 = Color3.new(1,0,0)
-        textLabel.Text = character.Name
-        textLabel.TextScaled = true
-    end
+    if not root or root:FindFirstChild("ESP_GUI") then return end
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_GUI"
+    billboard.Parent = root
+    billboard.Size = UDim2.new(0, 150, 0, 60)
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0, -3.5, 0)
+    billboard.LightInfluence = 0
+
+    local frame = Instance.new("Frame", billboard)
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundColor3 = Fluent.Colors.Background
+    frame.BackgroundTransparency = 0.3
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+    local border = Instance.new("UIStroke", frame)
+    border.Color = Fluent.Colors.Accent
+    border.Thickness = 1.5
+
+    local textLabel = Instance.new("TextLabel", frame)
+    textLabel.Size = UDim2.new(1, -10, 1, -10)
+    textLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    textLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    textLabel.BackgroundTransparency = 1
+    textLabel.TextColor3 = Fluent.Colors.Text
+    textLabel.Font = Fluent.Fonts.Primary
+    textLabel.Text = character.Name
+    textLabel.TextScaled = true
+    textLabel.TextStrokeTransparency = 0.5
 end
 
-local function enableESP()
-    for _, plr in pairs(game.Players:GetPlayers()) do
-        if plr ~= player then
-            if plr.Character then
-                createESP(plr.Character)
-            end
-            plr.CharacterAdded:Connect(function(character)
-                wait(0.1)
-                if espEnabled then
+local function updateESP(enabled)
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player then
+            p.CharacterAdded:Connect(function(character)
+                if Options.PlayerESP.Value then
+                    task.wait(0.1)
                     createESP(character)
                 end
             end)
-        end
-    end
-end
-
-local function disableESP()
-    for _, plr in pairs(game.Players:GetPlayers()) do
-        if plr ~= player and plr.Character then
-            local root = plr.Character:FindFirstChild("HumanoidRootPart")
-            if root then
-                local esp = root:FindFirstChild("ESP")
-                if esp then
-                    esp:Destroy()
+            if p.Character then
+                if enabled then
+                    createESP(p.Character)
+                else
+                    local espGui = p.Character:FindFirstChild("HumanoidRootPart") and p.Character.HumanoidRootPart:FindFirstChild("ESP_GUI")
+                    if espGui then espGui:Destroy() end
                 end
             end
         end
     end
 end
 
-------------------------------------------------
--- テレポート機能：対象プレイヤーの正面（HumanoidRootPart基準）に瞬時に移動
-------------------------------------------------
+local function getSelectedPlayer()
+    if not state.selectedTeleportPlayerName then return nil end
+    return Players:FindFirstChild(state.selectedTeleportPlayerName)
+end
+
 local function teleportToPlayer(targetPlayer)
-    if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        local targetHRP = targetPlayer.Character.HumanoidRootPart
-        local offset = 1.5
-        local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
-        player.Character.HumanoidRootPart.CFrame = CFrame.new(newPos, targetHRP.Position)
-        camera.CFrame = CFrame.new(camera.CFrame.Position, targetHRP.Position)
-    end
+    if not targetPlayer or not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local targetHRP = targetPlayer.Character.HumanoidRootPart
+    local playerHRP = player.Character.HumanoidRootPart
+    
+    local offset = Options.TeleportPositionToggle.Value and -3 or 3
+    
+    local lookAtPos = targetHRP.Position
+    local newPos = targetHRP.CFrame * CFrame.new(0, 0, offset).Position
+    playerHRP.CFrame = CFrame.new(newPos, lookAtPos)
 end
 
-------------------------------------------------
--- F前進機能
-------------------------------------------------
-userInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.KeyCode == Enum.KeyCode.F then
-        if forwardMovementEnabled then
-            isRunning = true
-            task.spawn(function()
-                while isRunning do
-                    task.wait()
-                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                        local hrp = player.Character.HumanoidRootPart
-                        hrp.CFrame = hrp.CFrame + hrp.CFrame.LookVector * multiplier
-                    end
-                end
-            end)
-        end
-    end
-end)
+local function bringPlayer(targetPlayer)
+    if not targetPlayer or not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local targetHRP = targetPlayer.Character.HumanoidRootPart
+    local playerHRP = player.Character.HumanoidRootPart
+    targetHRP.CFrame = playerHRP.CFrame * CFrame.new(0, 0, -3)
+end
 
-userInputService.InputEnded:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.KeyCode == Enum.KeyCode.F then
-        isRunning = false
-    end
-end)
-
-------------------------------------------------
--- FreeFly移動処理 (RenderStepped)
-------------------------------------------------
-runService.RenderStepped:Connect(function(delta)
-    if freeFlyEnabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = player.Character.HumanoidRootPart
-        local bv = hrp:FindFirstChild("FlyBodyVelocity")
-        if not bv then
-            bv = Instance.new("BodyVelocity")
-            bv.Name = "FlyBodyVelocity"
-            bv.MaxForce = Vector3.new(1e5,1e5,1e5)
-            bv.P = 1e4
-            bv.Parent = hrp
+local function spectatePlayer(targetPlayer, shouldSpectate)
+    if shouldSpectate then
+        if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChildOfClass("Humanoid") then
+            state.isSpectating = true
+            camera.CameraSubject = targetPlayer.Character.Humanoid
         end
-        local moveVector = Vector3.new()
-        if userInputService:IsKeyDown(Enum.KeyCode.W) then
-            moveVector = moveVector + camera.CFrame.LookVector
-        end
-        if userInputService:IsKeyDown(Enum.KeyCode.S) then
-            moveVector = moveVector - camera.CFrame.LookVector
-        end
-        if userInputService:IsKeyDown(Enum.KeyCode.A) then
-            moveVector = moveVector - camera.CFrame.RightVector
-        end
-        if userInputService:IsKeyDown(Enum.KeyCode.D) then
-            moveVector = moveVector + camera.CFrame.RightVector
-        end
-        if userInputService:IsKeyDown(Enum.KeyCode.Space) then
-            moveVector = moveVector + Vector3.new(0,1,0)
-        end
-        if userInputService:IsKeyDown(Enum.KeyCode.LeftShift) or userInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-            moveVector = moveVector - Vector3.new(0,1,0)
-        end
-        if moveVector.Magnitude > 0 then
-            moveVector = moveVector.Unit
-        end
-        bv.Velocity = moveVector * freeFlySpeed
     else
-        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local hrp = player.Character.HumanoidRootPart
-            local bv = hrp:FindFirstChild("FlyBodyVelocity")
-            if bv then bv:Destroy() end
+        state.isSpectating = false
+        if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+            camera.CameraSubject = player.Character.Humanoid
         end
     end
-end)
-
-------------------------------------------------
--- Spin処理 (RenderStepped)
-------------------------------------------------
-runService.RenderStepped:Connect(function(delta)
-    if spinEnabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = player.Character.HumanoidRootPart
-        hrp.CFrame = hrp.CFrame * CFrame.Angles(0, spinSpeed * delta, 0)
-    end
-end)
-
-------------------------------------------------
--- Noclip処理 (Stepped)
-------------------------------------------------
-runService.Stepped:Connect(function()
-    if noclipEnabled and player.Character then
-        for _, part in pairs(player.Character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
-        end
-    end
-end)
-
-------------------------------------------------
--- 無限ジャンプ
-------------------------------------------------
-userInputService.JumpRequest:Connect(function()
-    if infiniteJump and player.Character then
-        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
-    end
-end)
-
-------------------------------------------------
--- Teleport Loop処理 (RenderStepped)
--- 対象プレイヤーのHumanoidRootPartを基準に、正面に1.5スタッドで追従
-------------------------------------------------
-runService.RenderStepped:Connect(function(delta)
-    if teleportLoopEnabled 
-       and selectedTeleportPlayer 
-       and selectedTeleportPlayer.Character 
-       and selectedTeleportPlayer.Character:FindFirstChild("HumanoidRootPart")
-       and player.Character 
-       and player.Character:FindFirstChild("HumanoidRootPart") then
-        local targetHRP = selectedTeleportPlayer.Character.HumanoidRootPart
-        local offset = 1.5
-        local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
-        player.Character.HumanoidRootPart.CFrame = CFrame.new(newPos, targetHRP.Position)
-        camera.CFrame = CFrame.new(camera.CFrame.Position, targetHRP.Position)
-    end
-end)
-
-------------------------------------------------
--- カメラ更新処理 (RenderStepped)
--- 常にカメラはCustomにする（Teleport Loop中も一人称視点にならない）
-------------------------------------------------
-runService.RenderStepped:Connect(function(delta)
-    local cam = workspace.CurrentCamera
-    cam.CameraType = Enum.CameraType.Custom
-end)
-
-------------------------------------------------
--- GUI作成（タブ切替付き）
-------------------------------------------------
-local function createCustomSliderForList(parent, min, max, callback, labelText)
-    local sliderFrame = Instance.new("Frame", parent)
-    sliderFrame.Size = UDim2.new(0,250,0,50)
-    sliderFrame.BackgroundColor3 = Color3.new(1,1,1)
-    local sliderLabel = Instance.new("TextLabel", sliderFrame)
-    sliderLabel.Size = UDim2.new(1,0,0,20)
-    sliderLabel.Position = UDim2.new(0,0,0,0)
-    sliderLabel.BackgroundColor3 = Color3.new(1,1,1)
-    sliderLabel.Text = labelText
-    sliderLabel.TextScaled = true
-    local sliderBar = Instance.new("Frame", sliderFrame)
-    sliderBar.Size = UDim2.new(0,200,0,10)
-    sliderBar.Position = UDim2.new(0.5,-100,0.5,-5)
-    sliderBar.BackgroundColor3 = Color3.new(0.3,0.3,0.3)
-    local sliderButton = Instance.new("TextButton", sliderBar)
-    sliderButton.Size = UDim2.new(0,20,0,20)
-    sliderButton.BackgroundColor3 = Color3.new(1,0,0)
-    sliderButton.Text = ""
-    sliderButton.MouseButton1Down:Connect(function()
-        local movingConnection = userInputService.InputChanged:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseMovement then
-                local x = math.clamp(input.Position.X - sliderBar.AbsolutePosition.X, 0, sliderBar.AbsoluteSize.X)
-                sliderButton.Position = UDim2.new(0, x - sliderButton.AbsoluteSize.X/2, 0.5, -5)
-                callback(math.floor(min + (max - min) * (x / sliderBar.AbsoluteSize.X)))
-            end
-        end)
-        local upConnection = userInputService.InputEnded:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                movingConnection:Disconnect()
-                upConnection:Disconnect()
-            end
-        end)
-    end)
-    return sliderFrame
 end
 
-local function createGUI()
-    local screenGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
-    screenGui.Name = "MODInjectorGUI"
+local function setCharacterSize(scale)
+    local char = player.Character
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
     
-    local hiddenLabel = Instance.new("TextLabel", screenGui)
-    hiddenLabel.Name = "HiddenLabel"
-    hiddenLabel.Size = UDim2.new(0,300,0,50)
-    hiddenLabel.Position = UDim2.new(0.5,-150,0,10)
-    hiddenLabel.Text = "坂部響己のチートを使用中"
-    hiddenLabel.TextColor3 = Color3.new(1,1,1)
-    hiddenLabel.BackgroundColor3 = Color3.new(0,0,0)
-    hiddenLabel.Visible = false
+    local scales = {"BodyDepthScale", "BodyHeightScale", "BodyWidthScale", "HeadScale"}
+    for _, scaleName in ipairs(scales) do
+        local scaleValue = humanoid:FindFirstChild(scaleName)
+        if scaleValue then
+            scaleValue.Value = scale
+        end
+    end
+end
 
-    local txtButton = Instance.new("TextButton")
-    txtButton.BackgroundTransparency = 1
-    txtButton.Size = UDim2.new(0,0,0,0)
-    txtButton.Text = " "
-    txtButton.Parent = screenGui
-
-    local guiMain = Instance.new("Frame", screenGui)
-    guiMain.Name = "MODInjectorMain"
-    guiMain.Size = UDim2.new(0,500,0,700)
-    guiMain.Position = UDim2.new(0.5,-250,0.5,-350)
-    guiMain.BorderSizePixel = 2
-    guiMain.Active = true
-    guiMain.Draggable = true
-    local mainFrameCorner = Instance.new("UICorner", guiMain)
-    mainFrameCorner.CornerRadius = UDim.new(0,10)
-
-    local gradient = Instance.new("UIGradient", guiMain)
-    gradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255,0,0)),
-        ColorSequenceKeypoint.new(0.15, Color3.fromRGB(255,165,0)),
-        ColorSequenceKeypoint.new(0.3, Color3.fromRGB(255,255,0)),
-        ColorSequenceKeypoint.new(0.45, Color3.fromRGB(0,255,0)),
-        ColorSequenceKeypoint.new(0.6, Color3.fromRGB(0,0,255)),
-        ColorSequenceKeypoint.new(0.75, Color3.fromRGB(75,0,130)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(238,130,238))
-    })
-    animateRainbowBackground(guiMain)
-
-    if not screenGui:FindFirstChild("LogoImage") then
-        local logo = Instance.new("ImageLabel")
-        logo.Name = "LogoImage"
-        logo.Parent = screenGui
-        logo.Size = UDim2.new(0,150,0,150)
-        logo.AnchorPoint = Vector2.new(1,1)
-        logo.Position = UDim2.new(1, -10, 1, -10)
-        logo.BackgroundTransparency = 1
-        logo.Image = "rbxassetid://71061330924177"
+local function handleWalkOnWater()
+    local char = player.Character
+    if not (Options.WalkOnWater and Options.WalkOnWater.Value) or not char or not char:FindFirstChild("HumanoidRootPart") then
+        if state.waterPart then state.waterPart:Destroy(); state.waterPart = nil; end
+        return
     end
 
-    local headerFrame = Instance.new("Frame", guiMain)
-    headerFrame.Size = UDim2.new(1,0,0,30)
-    headerFrame.Position = UDim2.new(0,0,0,0)
-    headerFrame.BackgroundTransparency = 1
-    headerFrame.BorderSizePixel = 0
-    local headerCorner = Instance.new("UICorner", headerFrame)
-    headerCorner.CornerRadius = UDim.new(0,8)
+    local hrp = char.HumanoidRootPart
+    local rayOrigin = hrp.Position
+    local rayDirection = Vector3.new(0, -10, 0)
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {char}
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    local result = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
 
-    local titleLabel = Instance.new("TextLabel", headerFrame)
-    titleLabel.Size = UDim2.new(1,0,1,0)
-    titleLabel.Position = UDim2.new(0,0,0,0)
-    titleLabel.Text = "MOD INJECTOR"
-    titleLabel.TextColor3 = Color3.new(1,1,1)
-    titleLabel.BackgroundTransparency = 0
-    titleLabel.BackgroundColor3 = Color3.new(0,0,0)
-    titleLabel.TextSize = 20
-    titleLabel.TextScaled = true
-    titleLabel.TextXAlignment = Enum.TextXAlignment.Center
-    local titleCorner = Instance.new("UICorner", titleLabel)
-    titleCorner.CornerRadius = UDim.new(0,8)
-
-    local hideButton = Instance.new("TextButton", headerFrame)
-    hideButton.Size = UDim2.new(0,20,0,20)
-    hideButton.Position = UDim2.new(0,0,0,0)
-    hideButton.Text = "_"
-    hideButton.BackgroundColor3 = Color3.new(1,0,0)
-    hideButton.TextColor3 = Color3.new(1,1,1)
-    hideButton.TextScaled = true
-    local hideButtonCorner = Instance.new("UICorner", hideButton)
-    hideButtonCorner.CornerRadius = UDim.new(0,8)
-    hideButton.MouseButton1Click:Connect(function()
-        guiMain.Visible = false
-        hiddenLabel.Visible = true
-        userInputService.MouseIconEnabled = false
-        txtButton.Modal = false
-        userInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-    end)
-
-    local contentFrame = Instance.new("Frame", guiMain)
-    contentFrame.Size = UDim2.new(1,0,1,-30)
-    contentFrame.Position = UDim2.new(0,0,0,30)
-    contentFrame.BackgroundTransparency = 1
-
-    local mainPage = Instance.new("Frame", contentFrame)
-    mainPage.Size = UDim2.new(1,0,1,0)
-    mainPage.Position = UDim2.new(0,0,0,0)
-    mainPage.BackgroundTransparency = 1
-    mainPage.Visible = true
-
-    local mainListLayout = Instance.new("UIListLayout", mainPage)
-    mainListLayout.FillDirection = Enum.FillDirection.Vertical
-    mainListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    mainListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-    mainListLayout.Padding = UDim.new(0,10)
-
-    local walkSpeedSlider = createCustomSliderForList(mainPage, 16, 100, function(value)
-        local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            humanoid.WalkSpeed = value
+    if result and result.Material == Enum.Material.Water then
+        if not state.waterPart then
+            state.waterPart = Instance.new("Part")
+            state.waterPart.Name = "WaterWalkPart"
+            state.waterPart.Size = Vector3.new(15, 1, 15)
+            state.waterPart.Anchored = true
+            state.waterPart.CanCollide = true
+            state.waterPart.Transparency = 1
+            state.waterPart.Parent = workspace
         end
-    end, "スピード調整")
-    walkSpeedSlider.LayoutOrder = 1
+        state.waterPart.CFrame = CFrame.new(hrp.Position.X, result.Position.Y, hrp.Position.Z)
+    else
+        if state.waterPart then state.waterPart:Destroy(); state.waterPart = nil; end
+    end
+end
 
-    local jumpPowerSlider = createCustomSliderForList(mainPage, 50, 200, function(value)
-        local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            humanoid.JumpPower = value
+------------------------------------------------
+-- CutGrass Feature Implementations
+------------------------------------------------
+local cutGrass_tierColors = {
+    [1] = Color3.fromRGB(150, 150, 150), [2] = Color3.fromRGB(30, 236, 0),
+    [3] = Color3.fromRGB(53, 165, 255), [4] = Color3.fromRGB(167, 60, 255),
+    [5] = Color3.fromRGB(255, 136, 0), [6] = Color3.fromRGB(255, 0, 0)
+}
+
+local function cutGrass_GetAllLootZones()
+    local zones = {}
+    local lootZonesFolder = workspace:FindFirstChild("LootZones")
+    if lootZonesFolder then
+        for _, zone in ipairs(lootZonesFolder:GetChildren()) do
+            table.insert(zones, zone.Name)
         end
-    end, "ジャンプ力調整")
-    jumpPowerSlider.LayoutOrder = 2
+    end
+    if #zones == 0 then return {"Main"} end
+    return zones
+end
 
-    local infiniteJumpButton = Instance.new("TextButton", mainPage)
-    infiniteJumpButton.Size = UDim2.new(0,250,0,50)
-    infiniteJumpButton.Text = "無限ジャンプ OFF"
-    infiniteJumpButton.BackgroundColor3 = Color3.new(1,0,0)
-    infiniteJumpButton.TextColor3 = Color3.new(1,1,1)
-    infiniteJumpButton.LayoutOrder = 3
-    local infiniteJumpButtonCorner = Instance.new("UICorner", infiniteJumpButton)
-    infiniteJumpButtonCorner.CornerRadius = UDim.new(0,8)
-    infiniteJumpButton.MouseButton1Click:Connect(function()
-        infiniteJump = not infiniteJump
-        infiniteJumpButton.Text = infiniteJump and "無限ジャンプ ON" or "無限ジャンプ OFF"
-    end)
-    userInputService.JumpRequest:Connect(function()
-        if infiniteJump then
-            local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-            if humanoid then
-                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+local function cutGrass_SetAutoCut(enabled)
+    local WeaponSwingEvent = ReplicatedStorage:FindFirstChild("RemoteEvents"):FindFirstChild("WeaponSwingEvent")
+    if not WeaponSwingEvent then return end
+    if enabled then
+        WeaponSwingEvent:FireServer("HitboxStart")
+    else
+        WeaponSwingEvent:FireServer("HitboxEnd")
+    end
+end
+
+local function cutGrass_SetGrassVisibility(grass, visible)
+    local function setPartVisibility(part, vis)
+        if vis then
+            part.Transparency = state.cutGrass_OriginalGrassTransparencies[part] or 0
+            part.CanCollide = true
+        else
+            if not state.cutGrass_OriginalGrassTransparencies[part] then
+                state.cutGrass_OriginalGrassTransparencies[part] = part.Transparency
+            end
+            part.Transparency = 1
+            part.CanCollide = false
+        end
+    end
+
+    if grass:IsA("BasePart") then
+        setPartVisibility(grass, visible)
+    elseif grass:IsA("Model") then
+        for _, part in pairs(grass:GetDescendants()) do
+            if part:IsA("BasePart") then
+                setPartVisibility(part, visible)
             end
         end
-    end)
+    end
+end
 
-    local forwardButton = Instance.new("TextButton", mainPage)
-    forwardButton.Size = UDim2.new(0,250,0,50)
-    forwardButton.Text = "F前進 OFF"
-    forwardButton.BackgroundColor3 = Color3.new(1,0,0)
-    forwardButton.TextColor3 = Color3.new(1,1,1)
-    forwardButton.LayoutOrder = 4
-    local forwardButtonCorner = Instance.new("UICorner", forwardButton)
-    forwardButtonCorner.CornerRadius = UDim.new(0,8)
-    forwardButton.MouseButton1Click:Connect(function()
-        forwardMovementEnabled = not forwardMovementEnabled
-        forwardButton.Text = forwardMovementEnabled and "F前進 ON" or "F前進 OFF"
-    end)
+local function cutGrass_StopGrassMonitoring()
+    for _, conn in ipairs(state.cutGrass_GrassAddedConnections) do conn:Disconnect() end
+    state.cutGrass_GrassAddedConnections = {}
+end
 
-    local forwardSpeedButton = Instance.new("TextButton", mainPage)
-    forwardSpeedButton.Size = UDim2.new(0,250,0,50)
-    forwardSpeedButton.Text = "F速度: " .. multiplier
-    forwardSpeedButton.BackgroundColor3 = Color3.new(0,1,0)
-    forwardSpeedButton.TextColor3 = Color3.new(1,1,1)
-    forwardSpeedButton.LayoutOrder = 5
-    local forwardSpeedButtonCorner = Instance.new("UICorner", forwardSpeedButton)
-    forwardSpeedButtonCorner.CornerRadius = UDim.new(0,8)
-    forwardSpeedButton.MouseButton1Click:Connect(function()
-        multiplier = multiplier + 1
-        if multiplier > 5 then
-            multiplier = 1
+local function cutGrass_StartGrassMonitoring()
+    cutGrass_StopGrassMonitoring()
+    local grassFolder = workspace:FindFirstChild("Grass")
+    if grassFolder then
+        local conn = grassFolder.ChildAdded:Connect(function(newGrass)
+            if not Options.cutGrass_ToggleGrass.Value then
+                cutGrass_SetGrassVisibility(newGrass, false)
+            end
+        end)
+        table.insert(state.cutGrass_GrassAddedConnections, conn)
+    end
+end
+
+local function cutGrass_ToggleGrassVisibility(visible)
+    local grassFolder = workspace:FindFirstChild("Grass")
+    if visible then
+        cutGrass_StopGrassMonitoring()
+        if grassFolder then
+            for _, grass in pairs(grassFolder:GetChildren()) do
+                cutGrass_SetGrassVisibility(grass, true)
+            end
         end
-        forwardSpeedButton.Text = "F速度: " .. multiplier
-    end)
-
-    local freeFlyButton = Instance.new("TextButton", mainPage)
-    freeFlyButton.Size = UDim2.new(0,250,0,50)
-    freeFlyButton.Text = "FreeFly OFF"
-    freeFlyButton.BackgroundColor3 = Color3.new(1,0,0)
-    freeFlyButton.TextColor3 = Color3.new(1,1,1)
-    freeFlyButton.LayoutOrder = 6
-    local freeFlyButtonCorner = Instance.new("UICorner", freeFlyButton)
-    freeFlyButtonCorner.CornerRadius = UDim.new(0,8)
-    freeFlyButton.MouseButton1Click:Connect(function()
-        freeFlyEnabled = not freeFlyEnabled
-        freeFlyButton.Text = freeFlyEnabled and "FreeFly ON" or "FreeFly OFF"
-        if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
-            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-            humanoid.PlatformStand = freeFlyEnabled
+    else
+        if grassFolder then
+            for _, grass in pairs(grassFolder:GetChildren()) do
+                cutGrass_SetGrassVisibility(grass, false)
+            end
         end
+        cutGrass_StartGrassMonitoring()
+    end
+end
+
+local function cutGrass_DeactivateAntiTeleport()
+    for _, connection in ipairs(state.cutGrass_AntiTeleportConnections) do connection:Disconnect() end
+    state.cutGrass_AntiTeleportConnections = {}
+end
+
+local function cutGrass_ActivateAntiTeleport(character)
+    cutGrass_DeactivateAntiTeleport()
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass('Humanoid')
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not (humanoid and rootPart) then return end
+
+    local lastCF = rootPart.CFrame
+    local stop
+    local heartbeatConn = RunService.Heartbeat:Connect(function()
+        if stop or not rootPart or not rootPart.Parent then return end
+        lastCF = rootPart.CFrame
     end)
+    table.insert(state.cutGrass_AntiTeleportConnections, heartbeatConn)
 
-    local freeFlySlider = createCustomSliderForList(mainPage, 10, 200, function(value)
-        freeFlySpeed = value
-    end, "FreeFly速度調整")
-    freeFlySlider.LayoutOrder = 7
+    local cframeConn = rootPart:GetPropertyChangedSignal('CFrame'):Connect(function()
+        stop = true
+        if rootPart and rootPart.Parent then rootPart.CFrame = lastCF end
+        RunService.Heartbeat:Wait()
+        stop = false
+    end)
+    table.insert(state.cutGrass_AntiTeleportConnections, cframeConn)
 
-    local noclipButton = Instance.new("TextButton", mainPage)
-    noclipButton.Size = UDim2.new(0,250,0,50)
-    noclipButton.Text = "Noclip OFF"
-    noclipButton.BackgroundColor3 = Color3.new(1,0,0)
-    noclipButton.TextColor3 = Color3.new(1,1,1)
-    noclipButton.LayoutOrder = 8
-    local noclipButtonCorner = Instance.new("UICorner", noclipButton)
-    noclipButtonCorner.CornerRadius = UDim.new(0,8)
-    noclipButton.MouseButton1Click:Connect(function()
-        noclipEnabled = not noclipEnabled
-        if noclipEnabled then
-            noclipButton.Text = "Noclip ON"
-        else
-            noclipButton.Text = "Noclip OFF"
-            if player.Character then
-                for _, part in pairs(player.Character:GetDescendants()) do
-                    if part:IsA("BasePart") then
-                        part.CanCollide = true
+    local diedConn = humanoid.Died:Connect(cutGrass_DeactivateAntiTeleport)
+    table.insert(state.cutGrass_AntiTeleportConnections, diedConn)
+end
+
+local function cutGrass_SetAutoCollect(enabled)
+    if enabled then
+        if not Options.cutGrass_AntiTeleportToggle.Value then
+            Options.cutGrass_AntiTeleportToggle:SetValue(true)
+        end
+        if state.cutGrass_AutoCollectCoroutine then coroutine.close(state.cutGrass_AutoCollectCoroutine) end
+        if state.cutGrass_AutoGrassDeleteCoroutine then coroutine.close(state.cutGrass_AutoGrassDeleteCoroutine) end
+
+        state.cutGrass_AutoGrassDeleteCoroutine = coroutine.create(function()
+            while Options.cutGrass_AutoCollectChestsToggle.Value do
+                cutGrass_ToggleGrassVisibility(false)
+                task.wait(0.5)
+            end
+        end)
+
+        state.cutGrass_AutoCollectCoroutine = coroutine.create(function()
+            local function collect(item)
+                if not Options.cutGrass_AutoCollectChestsToggle.Value or not item or not item.Parent then return false end
+                local Character = player.Character
+                if not Character then return false end
+                local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+                if not HumanoidRootPart then return false end
+                local TargetPart = item:IsA("BasePart") and item or (item:IsA("Model") and (item.PrimaryPart or item:FindFirstChildOfClass("BasePart")))
+                if not TargetPart or not TargetPart.Parent then return true end
+
+                local antiTeleportWasEnabled = Options.cutGrass_AntiTeleportToggle.Value
+                if antiTeleportWasEnabled then cutGrass_DeactivateAntiTeleport() end
+
+                HumanoidRootPart.CFrame = TargetPart.CFrame * CFrame.new(0, 0, -1.5)
+                task.wait(0.01)
+                for i = 1, 4 do
+                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                    task.wait(0.01)
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                    if i < 4 then task.wait(0.01) end
+                end
+                task.wait(0.02)
+                if antiTeleportWasEnabled then cutGrass_ActivateAntiTeleport(Character) end
+                return true
+            end
+
+            while Options.cutGrass_AutoCollectChestsToggle.Value do
+                local selectedZone = Options.cutGrass_LootZoneDropdown.Value
+                local lootZoneFolder = workspace.LootZones:FindFirstChild(selectedZone)
+                if lootZoneFolder and lootZoneFolder:FindFirstChild("Loot") then
+                    local children = lootZoneFolder.Loot:GetChildren()
+                    if #children > 0 then
+                        for _, item in ipairs(children) do
+                            if not Options.cutGrass_AutoCollectChestsToggle.Value then break end
+                            collect(item)
+                            task.wait(0.01)
+                        end
+                    else
+                        task.wait(0.1)
                     end
                 end
+                task.wait(0.02)
             end
-        end
-    end)
+        end)
+        coroutine.resume(state.cutGrass_AutoGrassDeleteCoroutine)
+        coroutine.resume(state.cutGrass_AutoCollectCoroutine)
+    else
+        if state.cutGrass_AutoCollectCoroutine then coroutine.close(state.cutGrass_AutoCollectCoroutine); state.cutGrass_AutoCollectCoroutine = nil end
+        if state.cutGrass_AutoGrassDeleteCoroutine then coroutine.close(state.cutGrass_AutoGrassDeleteCoroutine); state.cutGrass_AutoGrassDeleteCoroutine = nil end
+    end
+end
 
-    local spinButton = Instance.new("TextButton", mainPage)
-    spinButton.Size = UDim2.new(0,250,0,50)
-    spinButton.Text = "Spin OFF"
-    spinButton.BackgroundColor3 = Color3.new(1,0,0)
-    spinButton.TextColor3 = Color3.new(1,1,1)
-    spinButton.LayoutOrder = 9
-    local spinButtonCorner = Instance.new("UICorner", spinButton)
-    spinButtonCorner.CornerRadius = UDim.new(0,8)
-    spinButton.MouseButton1Click:Connect(function()
-        spinEnabled = not spinEnabled
-        spinButton.Text = spinEnabled and "Spin ON" or "Spin OFF"
-    end)
-
-    local espButton = Instance.new("TextButton", mainPage)
-    espButton.Size = UDim2.new(0,250,0,50)
-    espButton.Text = "ESP OFF"
-    espButton.BackgroundColor3 = Color3.new(1,0,0)
-    espButton.TextColor3 = Color3.new(1,1,1)
-    espButton.LayoutOrder = 10
-    local espButtonCorner = Instance.new("UICorner", espButton)
-    espButtonCorner.CornerRadius = UDim.new(0,8)
-    espButton.MouseButton1Click:Connect(function()
-        espEnabled = not espEnabled
-        espButton.Text = espEnabled and "ESP ON" or "ESP OFF"
-        if espEnabled then
-            enableESP()
-        else
-            disableESP()
-        end
-    end)
-
-    local teleportPage = Instance.new("Frame", contentFrame)
-    teleportPage.Size = UDim2.new(1,0,1,0)
-    teleportPage.Position = UDim2.new(0,0,0,0)
-    teleportPage.BackgroundTransparency = 1
-    teleportPage.Visible = false
-
-    local teleportListFrame = Instance.new("Frame", teleportPage)
-    teleportListFrame.Size = UDim2.new(1, -20, 0, 300)
-    teleportListFrame.Position = UDim2.new(0,10,0,10)
-    teleportListFrame.BackgroundTransparency = 1
-    local teleportListLayout = Instance.new("UIListLayout", teleportListFrame)
-    teleportListLayout.FillDirection = Enum.FillDirection.Vertical
-    teleportListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    teleportListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
-    teleportListLayout.Padding = UDim.new(0,5)
-
-    local navFrame = Instance.new("Frame", teleportPage)
-    navFrame.Size = UDim2.new(1, -20, 0, 40)
-    navFrame.Position = UDim2.new(0,10,0,320)
-    navFrame.BackgroundTransparency = 1
-
-    local prevButton = Instance.new("TextButton", navFrame)
-    prevButton.Size = UDim2.new(0, (navFrame.AbsoluteSize.X/2) - 5, 1, 0)
-    prevButton.Position = UDim2.new(0,0,0,0)
-    prevButton.Text = "前のページ"
-    prevButton.BackgroundColor3 = Color3.new(0,0,0)
-    prevButton.TextColor3 = Color3.new(1,1,1)
-    prevButton.TextScaled = true
-    local prevCorner = Instance.new("UICorner", prevButton)
-    prevCorner.CornerRadius = UDim.new(0,8)
-    prevButton.MouseButton1Click:Connect(function()
-        currentPage = currentPage - 1
-        updateTeleportList()
-    end)
-
-    local nextButton = Instance.new("TextButton", navFrame)
-    nextButton.Size = UDim2.new(0, (navFrame.AbsoluteSize.X/2) - 5, 1, 0)
-    nextButton.Position = UDim2.new(0.5,5,0,0)
-    nextButton.Text = "次のページ"
-    nextButton.BackgroundColor3 = Color3.new(0,0,0)
-    nextButton.TextColor3 = Color3.new(1,1,1)
-    nextButton.TextScaled = true
-    local nextCorner = Instance.new("UICorner", nextButton)
-    nextCorner.CornerRadius = UDim.new(0,8)
-    nextButton.MouseButton1Click:Connect(function()
-        currentPage = currentPage + 1
-        updateTeleportList()
-    end)
-
-    local teleportLoopButton = Instance.new("TextButton", teleportPage)
-    teleportLoopButton.Size = UDim2.new(1, -20, 0, 40)
-    teleportLoopButton.Position = UDim2.new(0,10,0,370)
-    teleportLoopButton.Text = "Teleport Loop: OFF"
-    teleportLoopButton.BackgroundColor3 = Color3.new(0,0,0)
-    teleportLoopButton.TextColor3 = Color3.new(1,1,1)
-    teleportLoopButton.TextScaled = true
-    local teleportLoopButtonCorner = Instance.new("UICorner", teleportLoopButton)
-    teleportLoopButtonCorner.CornerRadius = UDim.new(0,8)
-    teleportLoopButton.MouseButton1Click:Connect(function()
-        teleportLoopEnabled = not teleportLoopEnabled
-        teleportLoopButton.Text = teleportLoopEnabled and "Teleport Loop: ON" or "Teleport Loop: OFF"
-    end)
-
-    local pageInfoLabel = Instance.new("TextLabel", teleportPage)
-    pageInfoLabel.Size = UDim2.new(1, -20, 0, 30)
-    pageInfoLabel.Position = UDim2.new(0,10,0,420)
-    pageInfoLabel.BackgroundTransparency = 1
-    pageInfoLabel.TextColor3 = Color3.new(1,1,1)
-    pageInfoLabel.TextScaled = true
-    pageInfoLabel.Text = "1/1"
-
-    local selectedLabel = Instance.new("TextLabel", teleportPage)
-    selectedLabel.Size = UDim2.new(1, -20, 0, 30)
-    selectedLabel.Position = UDim2.new(0,10,0,460)
-    selectedLabel.BackgroundTransparency = 1
-    selectedLabel.Text = "選択中: なし"
-    selectedLabel.TextColor3 = Color3.new(1,1,1)
-    selectedLabel.TextScaled = true
-
-    local teleportButton = Instance.new("TextButton", teleportPage)
-    teleportButton.Size = UDim2.new(1, -20, 0, 50)
-    teleportButton.Position = UDim2.new(0,10,0,510)
-    teleportButton.Text = "テレポート"
-    teleportButton.BackgroundColor3 = Color3.new(0,1,0)
-    teleportButton.TextColor3 = Color3.new(1,1,1)
-    teleportButton.TextScaled = true
-    local teleportButtonCorner = Instance.new("UICorner", teleportButton)
-    teleportButtonCorner.CornerRadius = UDim.new(0,8)
-    teleportButton.MouseButton1Click:Connect(function()
-        if selectedTeleportPlayer then
-            teleportToPlayer(selectedTeleportPlayer)
-        end
-    end)
-
-    function updateTeleportList()
-        teleportListFrame:ClearAllChildren()
-        local layout = Instance.new("UIListLayout", teleportListFrame)
-        layout.FillDirection = Enum.FillDirection.Vertical
-        layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-        layout.VerticalAlignment = Enum.VerticalAlignment.Top
-        layout.Padding = UDim.new(0,5)
-        local playersList = {}
-        for _, plr in pairs(game.Players:GetPlayers()) do
-            if plr ~= player then
-                table.insert(playersList, plr)
-            end
-        end
-        local totalPages = math.max(1, math.ceil(#playersList / playersPerPage))
-        if currentPage > totalPages then currentPage = totalPages end
-        if currentPage < 1 then currentPage = 1 end
-        pageInfoLabel.Text = currentPage .. "/" .. totalPages
-        local startIndex = (currentPage - 1) * playersPerPage + 1
-        local endIndex = math.min(currentPage * playersPerPage, #playersList)
-        for i = startIndex, endIndex do
-            local plr = playersList[i]
-            local btn = Instance.new("TextButton", teleportListFrame)
-            btn.Size = UDim2.new(1,0,0,30)
-            btn.Text = plr.Name
-            btn.BackgroundColor3 = Color3.new(0,0,0)
-            btn.TextColor3 = Color3.new(1,1,1)
-            btn.TextScaled = true
-            local btnCorner = Instance.new("UICorner", btn)
-            btnCorner.CornerRadius = UDim.new(0,8)
-            btn.MouseButton1Click:Connect(function()
-                selectedTeleportPlayer = plr
-                selectedLabel.Text = "選択中: " .. plr.Name
-            end)
+local function cutGrass_UpdateHitbox()
+    if not player.Character then return end
+    local Tool = player.Character:FindFirstChildOfClass("Tool")
+    if Tool then
+        local Hitbox = Tool:FindFirstChild("Hitbox", true) or Tool:FindFirstChild("Blade", true) or Tool:FindFirstChild("Handle")
+        if Hitbox and Hitbox:IsA("BasePart") then
+            local size = Options.cutGrass_HitboxSizeSlider.Value
+            Hitbox.Size = Vector3.new(size, size, size)
+            Hitbox.Transparency = 0.5
         end
     end
-    updateTeleportList()
+end
 
-    local tabFrame = Instance.new("Frame", guiMain)
-    tabFrame.Size = UDim2.new(0,140,0,30)
-    tabFrame.Position = UDim2.new(1,-140,1,-30)
-    tabFrame.BackgroundTransparency = 1
+local function cutGrass_SetWalkSpeed(value)
+    if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+        player.Character.Humanoid.WalkSpeed = value
+    end
+end
 
-    local tabMain = Instance.new("TextButton", tabFrame)
-    tabMain.Size = UDim2.new(0,60,1,0)
-    tabMain.Position = UDim2.new(0,0,0,0)
-    tabMain.Text = "Main"
-    tabMain.BackgroundColor3 = Color3.new(0,0,0)
-    tabMain.TextColor3 = Color3.new(1,1,1)
-    tabMain.TextScaled = true
-    local tabMainCorner = Instance.new("UICorner", tabMain)
-    tabMainCorner.CornerRadius = UDim.new(0,8)
-
-    local tabTeleport = Instance.new("TextButton", tabFrame)
-    tabTeleport.Size = UDim2.new(0,80,1,0)
-    tabTeleport.Position = UDim2.new(0,60,0,0)
-    tabTeleport.Text = "Teleport"
-    tabTeleport.BackgroundColor3 = Color3.new(0.2,0.2,0.2)
-    tabTeleport.TextColor3 = Color3.new(1,1,1)
-    tabTeleport.TextScaled = true
-    local tabTeleportCorner = Instance.new("UICorner", tabTeleport)
-    tabTeleportCorner.CornerRadius = UDim.new(0,8)
-
-    tabMain.MouseButton1Click:Connect(function()
-        mainPage.Visible = true
-        teleportPage.Visible = false
-        tabMain.BackgroundColor3 = Color3.new(0,0,0)
-        tabTeleport.BackgroundColor3 = Color3.new(0.2,0.2,0.2)
-    end)
-    tabTeleport.MouseButton1Click:Connect(function()
-        mainPage.Visible = false
-        teleportPage.Visible = true
-        tabTeleport.BackgroundColor3 = Color3.new(0,0,0)
-        tabMain.BackgroundColor3 = Color3.new(0.2,0.2,0.2)
-        updateTeleportList()
-    end)
-    tabMain.BackgroundColor3 = Color3.new(0,0,0)
-    tabTeleport.BackgroundColor3 = Color3.new(0.2,0.2,0.2)
-
-    userInputService.InputBegan:Connect(function(input, gameProcessed)
-        if not gameProcessed and input.KeyCode == Enum.KeyCode.M then
-            guiMain.Visible = not guiMain.Visible
-            hiddenLabel.Visible = not guiMain.Visible
-            if guiMain.Visible then
-                userInputService.MouseIconEnabled = true
-                txtButton.Modal = true
-                userInputService.MouseBehavior = Enum.MouseBehavior.Default
-            else
-                userInputService.MouseIconEnabled = false
-                txtButton.Modal = false
-                userInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-            end
-        end
-    end)
+local function cutGrass_addHighlight(parent, type)
+    if not parent or not parent.Parent or parent:FindFirstChild("ESPHighlight") then return end
+    local tier = parent:GetAttribute("Tier") or 1
+    local fillColor = (type == "Player") and Color3.fromRGB(255, 0, 0) or (cutGrass_tierColors[tier] or Color3.fromRGB(255, 255, 255))
+    local outlineColor = (type == "Player") and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(255, 255, 0)
     
-    styleAllText(screenGui)
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ESPHighlight"; highlight.FillColor = fillColor; highlight.OutlineColor = outlineColor
+    highlight.FillTransparency = 0.5; highlight.OutlineTransparency = 0; highlight.Adornee = parent
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; highlight.Parent = parent
+    table.insert(state.cutGrass_ESPHighlights, {Highlight = highlight, Type = type, Parent = parent})
 end
 
-function styleAllText(screenGui)
-    for _, obj in pairs(screenGui:GetDescendants()) do
-        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-            if obj.Name == "HiddenLabel" then
-                obj.TextScaled = false
-                obj.TextSize = 24
-                obj.TextWrapped = true
-            else
-                obj.Font = Enum.Font.SourceSansBold
-                obj.TextStrokeTransparency = 0
-                obj.TextStrokeColor3 = Color3.new(0,0,0)
-                obj.TextSize = 36
-            end
+local function cutGrass_ClearESP(type)
+    for i = #state.cutGrass_ESPHighlights, 1, -1 do
+        local entry = state.cutGrass_ESPHighlights[i]
+        if entry.Type == type then
+            if entry.Highlight and entry.Highlight.Parent then pcall(function() entry.Highlight:Destroy() end) end
+            table.remove(state.cutGrass_ESPHighlights, i)
         end
     end
 end
 
-createGUI()
+local function cutGrass_ToggleChestESP(enabled)
+    if enabled then
+        for _, conn in ipairs(state.cutGrass_ChestESPConnections) do conn:Disconnect() end
+        state.cutGrass_ChestESPConnections = {}
+        local lootZones = workspace:FindFirstChild("LootZones")
+        if lootZones then
+            local function setupZone(zone)
+                local lootFolder = zone:FindFirstChild("Loot")
+                if lootFolder then
+                    for _, chest in ipairs(lootFolder:GetChildren()) do cutGrass_addHighlight(chest, "Chest") end
+                    local conn = lootFolder.ChildAdded:Connect(function(newChest) if Options.cutGrass_ChestESPToggle.Value then cutGrass_addHighlight(newChest, "Chest") end end)
+                    table.insert(state.cutGrass_ChestESPConnections, conn)
+                end
+            end
+            for _, zone in ipairs(lootZones:GetChildren()) do setupZone(zone) end
+            local conn = lootZones.ChildAdded:Connect(function(newZone) if Options.cutGrass_ChestESPToggle.Value then setupZone(newZone) end end)
+            table.insert(state.cutGrass_ChestESPConnections, conn)
+        end
+        if state.cutGrass_ChestESPUpdateCoroutine then coroutine.close(state.cutGrass_ChestESPUpdateCoroutine) end
+        state.cutGrass_ChestESPUpdateCoroutine = coroutine.create(function()
+            while Options.cutGrass_ChestESPToggle.Value do
+                local lootZones = workspace:FindFirstChild("LootZones")
+                if lootZones then
+                    for _, zone in ipairs(lootZones:GetChildren()) do
+                        local lootFolder = zone:FindFirstChild("Loot")
+                        if lootFolder then
+                            for _, chest in ipairs(lootFolder:GetChildren()) do if not chest:FindFirstChild("ESPHighlight") then cutGrass_addHighlight(chest, "Chest") end end
+                        end
+                    end
+                end
+                task.wait(0.2)
+            end
+        end)
+        coroutine.resume(state.cutGrass_ChestESPUpdateCoroutine)
+    else
+        cutGrass_ClearESP("Chest")
+        for _, conn in ipairs(state.cutGrass_ChestESPConnections) do conn:Disconnect() end
+        state.cutGrass_ChestESPConnections = {}
+        if state.cutGrass_ChestESPUpdateCoroutine then coroutine.close(state.cutGrass_ChestESPUpdateCoroutine); state.cutGrass_ChestESPUpdateCoroutine = nil end
+    end
+end
 
-player.CharacterAdded:Connect(function()
-    task.wait(1)
-    createGUI()
+local function cutGrass_TogglePlayerESP(enabled)
+    if enabled then
+        for _, conn in ipairs(state.cutGrass_PlayerESPConnections) do conn:Disconnect() end
+        state.cutGrass_PlayerESPConnections = {}
+        local function setupPlayer(p)
+            if p == player then return end
+            if p.Character then cutGrass_addHighlight(p.Character, "Player") end
+            local charConn = p.CharacterAdded:Connect(function(char) if Options.cutGrass_PlayerESPToggle.Value then task.wait(0.2); cutGrass_addHighlight(char, "Player") end end)
+            table.insert(state.cutGrass_PlayerESPConnections, charConn)
+        end
+        for _, p in ipairs(Players:GetPlayers()) do setupPlayer(p) end
+        local playerAddedConn = Players.PlayerAdded:Connect(function(p) if Options.cutGrass_PlayerESPToggle.Value then setupPlayer(p) end end)
+        table.insert(state.cutGrass_PlayerESPConnections, playerAddedConn)
+
+        if state.cutGrass_PlayerESPUpdateCoroutine then coroutine.close(state.cutGrass_PlayerESPUpdateCoroutine) end
+        state.cutGrass_PlayerESPUpdateCoroutine = coroutine.create(function()
+            while Options.cutGrass_PlayerESPToggle.Value do
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= player and p.Character and not p.Character:FindFirstChild("ESPHighlight") then cutGrass_addHighlight(p.Character, "Player") end
+                end
+                task.wait(0.3)
+            end
+        end)
+        coroutine.resume(state.cutGrass_PlayerESPUpdateCoroutine)
+    else
+        cutGrass_ClearESP("Player")
+        for _, conn in ipairs(state.cutGrass_PlayerESPConnections) do conn:Disconnect() end
+        state.cutGrass_PlayerESPConnections = {}
+        if state.cutGrass_PlayerESPUpdateCoroutine then coroutine.close(state.cutGrass_PlayerESPUpdateCoroutine); state.cutGrass_PlayerESPUpdateCoroutine = nil end
+    end
+end
+
+------------------------------------------------
+-- Core Logic (Loops & Events)
+------------------------------------------------
+
+RunService.Heartbeat:Connect(function(deltaTime)
+    local selectedPlayer = getSelectedPlayer()
+    if Options.LoopTeleportToggle and Options.LoopTeleportToggle.Value and selectedPlayer and selectedPlayer.Character and selectedPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        teleportToPlayer(selectedPlayer)
+    end
 end)
 
-userInputService.InputBegan:Connect(function(input, gameProcessed)
+RunService.RenderStepped:Connect(function(delta)
+    local char = player.Character
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not hrp then return end
+
+    if Options.GodMode and Options.GodMode.Value then humanoid.Health = humanoid.MaxHealth end
+    
+    if Options.RainbowCharacter and Options.RainbowCharacter.Value then
+        local hue = tick() % 5 / 5
+        local color = Color3.fromHSV(hue, 1, 1)
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then part.Color = color end
+        end
+    end
+
+    handleWalkOnWater()
+
+    if Options.Noclip and Options.Noclip.Value then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+    end
+
+    if Options.FreeFly and Options.FreeFly.Value then
+        local bv = hrp:FindFirstChild("FlyBodyVelocity") or Instance.new("BodyVelocity", hrp)
+        bv.Name = "FlyBodyVelocity"; bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge); bv.P = 1250
+        local moveVector = Vector3.new()
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveVector += camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveVector -= camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveVector -= camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveVector += camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveVector += Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveVector -= Vector3.new(0, 1, 0) end
+        bv.Velocity = (moveVector.Magnitude > 0 and moveVector.Unit or moveVector) * Options.FreeFlySpeed.Value
+    else
+        local bv = hrp:FindFirstChild("FlyBodyVelocity")
+        if bv then bv:Destroy() end
+    end
+
+    if Options.Spin and Options.Spin.Value then hrp.CFrame = hrp.CFrame * CFrame.Angles(0, 50 * delta, 0) end
+    
+    if not state.isSpectating then camera.CameraType = Enum.CameraType.Custom end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-    if input.KeyCode == Enum.KeyCode.N then
-        userInputService.MouseIconEnabled = not userInputService.MouseIconEnabled
+    if input.KeyCode == Enum.KeyCode.F and Options.FForward.Value then
+        state.isRunning = true
+        task.spawn(function()
+            while state.isRunning do
+                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    player.Character.HumanoidRootPart.CFrame += player.Character.HumanoidRootPart.CFrame.LookVector * Options.FForwardSpeed.Value
+                end
+                task.wait()
+            end
+        end)
+    end
+    if Options.ClickTeleport.Value and input.UserInputType == Enum.UserInputType.MouseButton1 and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and mouse.Target then
+            player.Character.HumanoidRootPart.CFrame = CFrame.new(mouse.Hit.p)
+        end
     end
 end)
 
-runService.RenderStepped:Connect(function(delta)
-    if teleportLoopEnabled 
-       and selectedTeleportPlayer 
-       and selectedTeleportPlayer.Character 
-       and selectedTeleportPlayer.Character:FindFirstChild("HumanoidRootPart")
-       and player.Character 
-       and player.Character:FindFirstChild("HumanoidRootPart") then
-        local targetHRP = selectedTeleportPlayer.Character.HumanoidRootPart
-        local offset = 1.5
-        local newPos = targetHRP.Position + targetHRP.CFrame.LookVector * offset
-        player.Character.HumanoidRootPart.CFrame = CFrame.new(newPos, targetHRP.Position)
-        camera.CFrame = CFrame.new(camera.CFrame.Position, targetHRP.Position)
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.F then state.isRunning = false end
+end)
+
+UserInputService.JumpRequest:Connect(function()
+    if Options.InfiniteJump.Value and player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+        player.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     end
 end)
 
-runService.RenderStepped:Connect(function(delta)
-    local cam = workspace.CurrentCamera
-    cam.CameraType = Enum.CameraType.Custom
+------------------------------------------------
+-- GUI CREATION & MANAGEMENT
+------------------------------------------------
+
+local Window = Fluent:CreateWindow({
+    Title = "MOD INJECTOR v3.6 by Gemini",
+    SubTitle = "Home",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 500),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+-- メインタブ
+local MainTab = Window:AddTab({ Title = "Main", Icon = "home" })
+local PlayerSection = MainTab:AddSection("Player")
+
+PlayerSection:AddToggle("GodMode", { Title = "ゴッドモード", Description = "プレイヤーを無敵にします", Default = false })
+PlayerSection:AddToggle("InfiniteJump", { Title = "無限ジャンプ", Description = "ジャンプを無限にできるようにします", Default = false })
+PlayerSection:AddToggle("RainbowCharacter", { Title = "虹色キャラクター", Description = "キャラクターの色を虹色に変化させます", Default = false })
+PlayerSection:AddToggle("WalkOnWater", { Title = "ウォークオンウォーター", Description = "水の上を歩けるようにします", Default = false }):OnChanged(function(value)
+    if not value and state.waterPart then
+        state.waterPart:Destroy()
+        state.waterPart = nil
+    end
 end)
+
+PlayerSection:AddSlider("WalkSpeed", {
+    Title = "歩く速度", Min = 16, Max = 200, Default = 16, Rounding = 0,
+    Callback = function(value) if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then player.Character.Humanoid.WalkSpeed = value end end
+})
+
+PlayerSection:AddSlider("JumpPower", {
+    Title = "ジャンプ力", Min = 50, Max = 300, Default = 50, Rounding = 0,
+    Callback = function(value) if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then player.Character.Humanoid.JumpPower = value end end
+})
+
+PlayerSection:AddSlider("CharacterSize", { Title = "キャラクターサイズ", Min = 0.5, Max = 3, Default = 1, Rounding = 2, Callback = setCharacterSize })
+
+local MovementSection = MainTab:AddSection("Movement")
+MovementSection:AddToggle("FreeFly", { Title = "FreeFly", Description = "空中を自由に飛行します (W/A/S/D, Space, L-Shift)", Default = false }):OnChanged(function(value)
+    if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then player.Character.Humanoid.PlatformStand = value end
+end)
+MovementSection:AddSlider("FreeFlySpeed", { Title = "FreeFly 速度", Min = 10, Max = 500, Default = 50, Rounding = 0 })
+MovementSection:AddToggle("Noclip", { Title = "Noclip", Description = "壁を通り抜けられるようにします", Default = false }):OnChanged(function(value)
+    if not value and player.Character then
+        for _, part in ipairs(player.Character:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end
+    end
+end)
+
+local MiscSection = MainTab:AddSection("Misc")
+MiscSection:AddToggle("ClickTeleport", { Title = "クリックテレポート", Description = "左Ctrlを押しながらクリックした場所にテレポートします", Default = false })
+MiscSection:AddToggle("FForward", { Title = "F-Forward", Description = "Fキーを押している間、前進し続けます", Default = false })
+MiscSection:AddSlider("FForwardSpeed", { Title = "F-Forward 速度", Min = 1, Max = 10, Default = 2, Rounding = 1 })
+MiscSection:AddToggle("Spin", { Title = "Spin", Description = "キャラクターを回転させます", Default = false })
+MiscSection:AddToggle("PlayerESP", { Title = "プレイヤーESP", Description = "他のプレイヤーの位置を表示します", Default = false, Callback = updateESP })
+
+-- テレポートタブ
+local TeleportTab = Window:AddTab({ Title = "Teleport", Icon = "shuffle" })
+local PlayerSelectionSection = TeleportTab:AddSection("Player Selection")
+local TeleportActionsSection = TeleportTab:AddSection("Actions")
+local playerDropdown = PlayerSelectionSection:AddDropdown("PlayerList", { Title = "プレイヤーを選択", Values = {}, Default = nil, Callback = function(v) state.selectedTeleportPlayerName = v end })
+PlayerSelectionSection:AddButton({ Title = "プレイヤーリストを更新", Callback = function()
+    local names = {}
+    for _, p in ipairs(Players:GetPlayers()) do if p ~= player then table.insert(names, p.Name) end end
+    playerDropdown:SetValues(names)
+    Fluent:Notify({ Title = "更新完了", Content = #names .. "人のプレイヤーが見つかりました。", Duration = 3 })
+end})
+TeleportActionsSection:AddButton({ Title = "選択したプレイヤーにテレポート", Callback = function() local t = getSelectedPlayer() if t then teleportToPlayer(t) else Fluent:Notify({Title="エラー",Content="プレイヤーが選択されていません。"}) end end })
+TeleportActionsSection:AddButton({ Title = "選択したプレイヤーを自分に呼ぶ", Callback = function() local t = getSelectedPlayer() if t then bringPlayer(t) else Fluent:Notify({Title="エラー",Content="プレイヤーが選択されていません。"}) end end })
+TeleportActionsSection:AddToggle("SpectateToggle", { Title = "観戦", Default = false, Callback = function(v) local t = getSelectedPlayer() if t then spectatePlayer(t, v) else Fluent:Notify({Title="エラー",Content="プレイヤーが選択されていません。"}) end end})
+TeleportActionsSection:AddToggle("LoopTeleportToggle", { Title = "ループテレポート", Default = false })
+TeleportActionsSection:AddToggle("TeleportPositionToggle", { Title = "ループ位置: 後ろ / 正面", Description = "トグルがONの時、正面にテレポートします", Default = false })
+
+-- CutGrassタブ
+local CutGrassTab = Window:AddTab({ Title = "CutGrass", Icon = "leaf" })
+local CgHacksSection = CutGrassTab:AddSection("Hacks")
+CgHacksSection:AddToggle("cutGrass_AutoCutGrassToggle", { Title = "Auto Cut Grass", Default = false, Callback = cutGrass_SetAutoCut })
+CgHacksSection:AddToggle("cutGrass_ToggleGrass", { Title = "Toggle Grass Visibility", Default = true, Callback = cutGrass_ToggleGrassVisibility })
+CgHacksSection:AddToggle("cutGrass_AntiTeleportToggle", { Title = "Enable Anti-Teleport", Default = false, Callback = function(v) if v then cutGrass_ActivateAntiTeleport(player.Character) else cutGrass_DeactivateAntiTeleport() end end })
+CgHacksSection:AddSlider("cutGrass_HitboxSizeSlider", { Title = "Hitbox Size", Min = 1, Max = 50, Default = 1, Rounding = 0, Callback = function(v)
+    cutGrass_UpdateHitbox()
+    if state.cutGrass_HitboxLoop then state.cutGrass_HitboxLoop:Disconnect(); state.cutGrass_HitboxLoop = nil end
+    if v > 1 then state.cutGrass_HitboxLoop = RunService.Heartbeat:Connect(cutGrass_UpdateHitbox) end
+end})
+CgHacksSection:AddSlider("cutGrass_WalkSpeedSlider", { Title = "Walk Speed", Min = 16, Max = 100, Default = 16, Rounding = 0, Callback = cutGrass_SetWalkSpeed })
+
+local CgChestsSection = CutGrassTab:AddSection("Chests")
+local cgLootZoneDropdown = CgChestsSection:AddDropdown("cutGrass_LootZoneDropdown", { Title = "Select Loot Zone", Values = cutGrass_GetAllLootZones(), Default = "Main", Callback = function()
+    if Options.cutGrass_AutoCollectChestsToggle.Value then
+        cutGrass_SetAutoCollect(false)
+        cutGrass_SetAutoCollect(true)
+    end
+end})
+CgChestsSection:AddToggle("cutGrass_AutoCollectChestsToggle", { Title = "Auto Collect Chests", Default = false, Callback = function(v)
+    cutGrass_SetAutoCollect(v)
+    cutGrass_ToggleGrassVisibility(not v)
+end})
+
+local CgVisualsSection = CutGrassTab:AddSection("Visuals")
+CgVisualsSection:AddToggle("cutGrass_ChestESPToggle", { Title = "Chest ESP", Default = false, Callback = cutGrass_ToggleChestESP })
+CgVisualsSection:AddToggle("cutGrass_PlayerESPToggle", { Title = "Player ESP", Default = false, Callback = cutGrass_TogglePlayerESP })
+
+
+-- ワールドタブ
+local WorldTab = Window:AddTab({ Title = "World", Icon = "world" })
+local LightingSection = WorldTab:AddSection("Lighting")
+LightingSection:AddSlider("FogEnd", { Title = "霧の距離", Min = 100, Max = 100000, Default = Lighting.FogEnd, Rounding = 0, Callback = function(v) Lighting.FogEnd = v end })
+LightingSection:AddSlider("TimeOfDay", { Title = "時間", Min = 0, Max = 1440, Default = Lighting:GetMinutesAfterMidnight(), Rounding = 0, Callback = function(v) Lighting:SetMinutesAfterMidnight(v) end })
+
+-- 設定タブ
+local SettingsTab = Window:AddTab({ Title = "Settings", Icon = "settings" })
+if SaveManager and InterfaceManager then
+    SaveManager:SetLibrary(Fluent)
+    InterfaceManager:SetLibrary(Fluent)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetFolder("ModInjectorFluentConfig")
+    InterfaceManager:SetFolder("ModInjectorFluentConfig")
+    InterfaceManager:BuildInterfaceSection(SettingsTab)
+    SaveManager:BuildConfigSection(SettingsTab)
+end
+
+-- 初期化
+Window:SelectTab(1)
+task.wait(1)
+local initialPlayerNames = {}
+for _, p in ipairs(Players:GetPlayers()) do if p ~= player then table.insert(initialPlayerNames, p.Name) end end
+playerDropdown:SetValues(initialPlayerNames)
+
+player.CharacterAdded:Connect(function(character)
+    task.wait(1)
+    local humanoid = character:WaitForChild("Humanoid")
+    
+    -- Main Features
+    if Options.PlayerESP and Options.PlayerESP.Value then updateESP(true) end
+    if Options.WalkSpeed and Options.WalkSpeed.Value then humanoid.WalkSpeed = Options.WalkSpeed.Value end
+    if Options.JumpPower and Options.JumpPower.Value then humanoid.JumpPower = Options.JumpPower.Value end
+    if Options.Noclip and Options.Noclip.Value then
+         for _, part in ipairs(character:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end
+    end
+    state.isSpectating = false
+    if Options.WalkOnWater and Options.WalkOnWater.Value and state.waterPart then state.waterPart:Destroy(); state.waterPart = nil end
+
+    -- CutGrass Features
+    if Options.cutGrass_AntiTeleportToggle and Options.cutGrass_AntiTeleportToggle.Value then cutGrass_ActivateAntiTeleport(character) end
+    if Options.cutGrass_HitboxSizeSlider and Options.cutGrass_HitboxSizeSlider.Value > 1 then cutGrass_UpdateHitbox() end
+    if Options.cutGrass_WalkSpeedSlider and Options.cutGrass_WalkSpeedSlider.Value then cutGrass_SetWalkSpeed(Options.cutGrass_WalkSpeedSlider.Value) end
+end)
+
+Fluent:Notify({
+    Title = "Mod Injector Fluent",
+    Content = "ロードが完了しました。'"..tostring(Window.MinimizeKey).."キー'でUIを開閉できます。",
+    Duration = 8
+})
+
+if SaveManager then
+    SaveManager:LoadAutoloadConfig()
+end

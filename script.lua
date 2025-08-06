@@ -2,7 +2,7 @@
     Script: MOD INJECTOR (Fluent Edition)
     Description: A feature-rich script for Roblox using the Fluent GUI library.
     Author: Gemini
-    Version: 3.6
+    Version: 5.0
     Date: 2025-08-04
 ]]
 
@@ -14,6 +14,7 @@ local Lighting = game:GetService("Lighting")
 local TeleportService = game:GetService("TeleportService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
 
 --// PLAYER & CAMERA //--
 local player = Players.LocalPlayer
@@ -65,7 +66,24 @@ local state = {
     cutGrass_PlayerESPUpdateCoroutine = nil,
     cutGrass_HitboxLoop = nil,
     cutGrass_OriginalGrassTransparencies = {},
-    cutGrass_GrassAddedConnections = {}
+    cutGrass_GrassAddedConnections = {},
+    -- Emote States
+    emote_jerk_tool = nil,
+    emote_jerk_coroutine = nil,
+    emote_jerk_active = false,
+    -- NoRagdoll State
+    noRagdollConnection = nil,
+    -- New states
+    originalGravity = workspace.Gravity,
+    dummyCharacter = nil,
+    invisibleLoop = nil,
+    -- Swim states
+    swimbeat = nil,
+    gravReset = nil,
+    -- Vehicle Fly states
+    vehicleFlyBodyVelocity = nil,
+    -- Initialization flag
+    isFirstLoad = true
 }
 
 --// FUNCTIONS //--
@@ -155,7 +173,11 @@ local function bringPlayer(targetPlayer)
     
     local targetHRP = targetPlayer.Character.HumanoidRootPart
     local playerHRP = player.Character.HumanoidRootPart
-    targetHRP.CFrame = playerHRP.CFrame * CFrame.new(0, 0, -3)
+    
+    -- "ループ位置: 後ろ / 正面" (Behind / Front). True = Front.
+    -- To bring to front, offset is negative Z. To bring to back, offset is positive Z.
+    local offset = Options.TeleportPositionToggle.Value and -5 or 5
+    targetHRP.CFrame = playerHRP.CFrame * CFrame.new(0, 0, offset)
 end
 
 local function spectatePlayer(targetPlayer, shouldSpectate)
@@ -217,6 +239,183 @@ local function handleWalkOnWater()
     else
         if state.waterPart then state.waterPart:Destroy(); state.waterPart = nil; end
     end
+end
+
+local function toggleGodMode(enabled)
+    local character = player.Character
+    if not character then return end
+
+    if enabled then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            local humanoidClone = humanoid:Clone()
+            humanoid:Destroy()
+            humanoidClone.Parent = character
+        end
+    else
+        -- To turn off, kill the player to get a fresh humanoid on respawn
+        character:BreakJoints()
+    end
+end
+
+local function toggleNoRagdoll(enabled)
+    if state.noRagdollConnection then
+        state.noRagdollConnection:Disconnect()
+        state.noRagdollConnection = nil
+    end
+
+    if enabled then
+        local character = player.Character
+        if not character then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return end
+
+        state.noRagdollConnection = humanoid.StateChanged:Connect(function(oldState, newState)
+            if newState == Enum.HumanoidStateType.Ragdoll or newState == Enum.HumanoidStateType.FallingDown then
+                humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        end)
+    end
+end
+
+local function toggleNoPrompts(enabled)
+    pcall(function()
+        local PurchasePrompt = CoreGui:FindFirstChild("PurchasePromptApp")
+        if PurchasePrompt then
+            PurchasePrompt.Enabled = not enabled
+        end
+    end)
+end
+
+local function toggleInvisible(enabled)
+    if state.invisibleLoop then
+        state.invisibleLoop:Disconnect()
+        state.invisibleLoop = nil
+    end
+
+    if enabled then
+        local char = player.Character
+        if not char then return end
+        
+        char.Archivable = true
+        state.dummyCharacter = char:Clone()
+        char.Parent = Lighting
+        state.dummyCharacter.Parent = workspace
+        
+        for _, obj in ipairs(state.dummyCharacter:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                obj.CanCollide = false
+            end
+        end
+        
+        state.invisibleLoop = RunService.RenderStepped:Connect(function()
+            if char and char.PrimaryPart and state.dummyCharacter and state.dummyCharacter.PrimaryPart then
+                state.dummyCharacter:SetPrimaryPartCFrame(char.PrimaryPart.CFrame)
+            end
+        end)
+    else
+        if player.Character and player.Character.Parent == Lighting then
+            player.Character.Parent = workspace
+        end
+        if state.dummyCharacter then
+            state.dummyCharacter:Destroy()
+            state.dummyCharacter = nil
+        end
+    end
+end
+
+local function resetCharacter()
+    local char = player.Character
+    if char and char:FindFirstChildOfClass("Humanoid") then
+        char.Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
+    end
+end
+
+local function toggleXray(enabled)
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.LocalTransparencyModifier = enabled and 0.7 or 0
+        end
+    end
+end
+
+local function toggleSwim(enabled)
+    local char = player.Character
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    local function stopSwimming()
+        workspace.Gravity = state.originalGravity
+        if state.gravReset then state.gravReset:Disconnect(); state.gravReset = nil end
+        if state.swimbeat then state.swimbeat:Disconnect(); state.swimbeat = nil end
+
+        local enums = Enum.HumanoidStateType:GetEnumItems()
+        for _, v in pairs(enums) do
+            humanoid:SetStateEnabled(v, true)
+        end
+        humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+    end
+
+    if enabled then
+        state.originalGravity = workspace.Gravity
+        workspace.Gravity = 0
+        
+        state.gravReset = humanoid.Died:Connect(function()
+            stopSwimming()
+            if Options.Swim then Options.Swim:SetValue(false) end
+        end)
+
+        local enums = Enum.HumanoidStateType:GetEnumItems()
+        table.remove(enums, table.find(enums, Enum.HumanoidStateType.None))
+        for _, v in pairs(enums) do
+            humanoid:SetStateEnabled(v, false)
+        end
+        humanoid:ChangeState(Enum.HumanoidStateType.Swimming)
+
+        state.swimbeat = RunService.Heartbeat:Connect(function()
+            pcall(function()
+                if humanoid.MoveDirection == Vector3.new() and not UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+                    char.HumanoidRootPart.Velocity = Vector3.new()
+                end
+            end)
+        end)
+    else
+        stopSwimming()
+    end
+end
+
+local function toggleVehicleFly(enabled)
+    if state.vehicleFlyBodyVelocity then
+        state.vehicleFlyBodyVelocity:Destroy()
+        state.vehicleFlyBodyVelocity = nil
+    end
+
+    if not enabled then return end
+
+    local char = player.Character
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.SeatPart == nil then
+        Fluent:Notify({Title = "エラー", Content = "乗り物に乗っていません。", Duration = 3})
+        Options.VehicleFly:SetValue(false)
+        return
+    end
+
+    local vehicleSeat = humanoid.SeatPart
+    local vehicle = vehicleSeat:FindFirstAncestorOfClass("Model")
+    local vehiclePart = vehicle and vehicle.PrimaryPart or vehicleSeat
+    
+    if not vehiclePart then
+        Fluent:Notify({Title = "エラー", Content = "乗り物のパーツが見つかりません。", Duration = 3})
+        Options.VehicleFly:SetValue(false)
+        return
+    end
+
+    state.vehicleFlyBodyVelocity = Instance.new("BodyVelocity")
+    state.vehicleFlyBodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    state.vehicleFlyBodyVelocity.P = 1250
+    state.vehicleFlyBodyVelocity.Parent = vehiclePart
 end
 
 ------------------------------------------------
@@ -313,7 +512,11 @@ local function cutGrass_ToggleGrassVisibility(visible)
 end
 
 local function cutGrass_DeactivateAntiTeleport()
-    for _, connection in ipairs(state.cutGrass_AntiTeleportConnections) do connection:Disconnect() end
+    for _, connection in ipairs(state.cutGrass_AntiTeleportConnections) do
+        if connection.Connected then
+            connection:Disconnect()
+        end
+    end
     state.cutGrass_AntiTeleportConnections = {}
 end
 
@@ -325,29 +528,31 @@ local function cutGrass_ActivateAntiTeleport(character)
     if not (humanoid and rootPart) then return end
 
     local lastCF = rootPart.CFrame
-    local stop
-    local heartbeatConn = RunService.Heartbeat:Connect(function()
+    local stop = false
+
+    local heartbeatConnection = RunService.Heartbeat:Connect(function()
         if stop or not rootPart or not rootPart.Parent then return end
         lastCF = rootPart.CFrame
     end)
-    table.insert(state.cutGrass_AntiTeleportConnections, heartbeatConn)
 
-    local cframeConn = rootPart:GetPropertyChangedSignal('CFrame'):Connect(function()
+    local cframeConnection = rootPart:GetPropertyChangedSignal('CFrame'):Connect(function()
         stop = true
-        if rootPart and rootPart.Parent then rootPart.CFrame = lastCF end
+        if rootPart and rootPart.Parent then
+            rootPart.CFrame = lastCF
+        end
         RunService.Heartbeat:Wait()
         stop = false
     end)
-    table.insert(state.cutGrass_AntiTeleportConnections, cframeConn)
 
-    local diedConn = humanoid.Died:Connect(cutGrass_DeactivateAntiTeleport)
-    table.insert(state.cutGrass_AntiTeleportConnections, diedConn)
+    local diedConnection = humanoid.Died:Connect(cutGrass_DeactivateAntiTeleport)
+
+    state.cutGrass_AntiTeleportConnections = {heartbeatConnection, cframeConnection, diedConnection}
 end
 
 local function cutGrass_SetAutoCollect(enabled)
     if enabled then
-        if not Options.cutGrass_AntiTeleportToggle.Value then
-            Options.cutGrass_AntiTeleportToggle:SetValue(true)
+        if not Options.AntiTeleportToggle.Value then
+            Options.AntiTeleportToggle:SetValue(true)
         end
         if state.cutGrass_AutoCollectCoroutine then coroutine.close(state.cutGrass_AutoCollectCoroutine) end
         if state.cutGrass_AutoGrassDeleteCoroutine then coroutine.close(state.cutGrass_AutoGrassDeleteCoroutine) end
@@ -369,7 +574,7 @@ local function cutGrass_SetAutoCollect(enabled)
                 local TargetPart = item:IsA("BasePart") and item or (item:IsA("Model") and (item.PrimaryPart or item:FindFirstChildOfClass("BasePart")))
                 if not TargetPart or not TargetPart.Parent then return true end
 
-                local antiTeleportWasEnabled = Options.cutGrass_AntiTeleportToggle.Value
+                local antiTeleportWasEnabled = Options.AntiTeleportToggle.Value
                 if antiTeleportWasEnabled then cutGrass_DeactivateAntiTeleport() end
 
                 HumanoidRootPart.CFrame = TargetPart.CFrame * CFrame.new(0, 0, -1.5)
@@ -421,12 +626,6 @@ local function cutGrass_UpdateHitbox()
             Hitbox.Size = Vector3.new(size, size, size)
             Hitbox.Transparency = 0.5
         end
-    end
-end
-
-local function cutGrass_SetWalkSpeed(value)
-    if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
-        player.Character.Humanoid.WalkSpeed = value
     end
 end
 
@@ -502,16 +701,16 @@ local function cutGrass_TogglePlayerESP(enabled)
         local function setupPlayer(p)
             if p == player then return end
             if p.Character then cutGrass_addHighlight(p.Character, "Player") end
-            local charConn = p.CharacterAdded:Connect(function(char) if Options.cutGrass_PlayerESPToggle.Value then task.wait(0.2); cutGrass_addHighlight(char, "Player") end end)
+            local charConn = p.CharacterAdded:Connect(function(char) if Options.PlayerESP.Value then task.wait(0.2); cutGrass_addHighlight(char, "Player") end end)
             table.insert(state.cutGrass_PlayerESPConnections, charConn)
         end
         for _, p in ipairs(Players:GetPlayers()) do setupPlayer(p) end
-        local playerAddedConn = Players.PlayerAdded:Connect(function(p) if Options.cutGrass_PlayerESPToggle.Value then setupPlayer(p) end end)
+        local playerAddedConn = Players.PlayerAdded:Connect(function(p) if Options.PlayerESP.Value then setupPlayer(p) end end)
         table.insert(state.cutGrass_PlayerESPConnections, playerAddedConn)
 
         if state.cutGrass_PlayerESPUpdateCoroutine then coroutine.close(state.cutGrass_PlayerESPUpdateCoroutine) end
         state.cutGrass_PlayerESPUpdateCoroutine = coroutine.create(function()
-            while Options.cutGrass_PlayerESPToggle.Value do
+            while Options.PlayerESP.Value do
                 for _, p in ipairs(Players:GetPlayers()) do
                     if p ~= player and p.Character and not p.Character:FindFirstChild("ESPHighlight") then cutGrass_addHighlight(p.Character, "Player") end
                 end
@@ -527,6 +726,100 @@ local function cutGrass_TogglePlayerESP(enabled)
     end
 end
 
+local function toggleCombinedPlayerESP(enabled)
+    updateESP(enabled)
+    cutGrass_TogglePlayerESP(enabled)
+end
+
+------------------------------------------------
+-- Emote Feature Implementations
+------------------------------------------------
+local function isR15(character)
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    return humanoid and humanoid.RigType == Enum.HumanoidRigType.R15
+end
+
+local function toggleJerk(enabled)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    local function stopTomfoolery()
+        state.emote_jerk_active = false
+        if state.emote_jerk_coroutine then
+            coroutine.close(state.emote_jerk_coroutine)
+            state.emote_jerk_coroutine = nil
+        end
+        if Options.emote_jerk and Options.emote_jerk.Value then
+             Options.emote_jerk:SetValue(false)
+        end
+    end
+
+    if enabled then
+        state.emote_jerk_active = true
+        if state.emote_jerk_coroutine then return end
+
+        state.emote_jerk_coroutine = coroutine.create(function()
+            local char = player.Character
+            if not char then stopTomfoolery(); return end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if not hum then stopTomfoolery(); return end
+
+            local isR15_anim = isR15(char)
+            local anim = Instance.new("Animation")
+            anim.AnimationId = not isR15_anim and "rbxassetid://72042024" or "rbxassetid://698251653"
+            
+            local diedConn
+            diedConn = hum.Died:Connect(function()
+                stopTomfoolery()
+                diedConn:Disconnect()
+            end)
+
+            while state.emote_jerk_active and char.Parent and hum.Health > 0 do
+                local track = hum:LoadAnimation(anim)
+                track:Play()
+                track:AdjustSpeed(isR15_anim and 0.7 or 0.65)
+                track.TimePosition = 0.6
+                task.wait(0.1)
+                while track.IsPlaying and track.TimePosition < (not isR15_anim and 0.65 or 0.7) do
+                    if not state.emote_jerk_active then break end
+                    task.wait()
+                end
+                track:Stop()
+                track:Destroy()
+                task.wait()
+            end
+            
+            if diedConn.Connected then diedConn:Disconnect() end
+        end)
+        coroutine.resume(state.emote_jerk_coroutine)
+    else
+        stopTomfoolery()
+    end
+end
+
+local function playHeadthrow()
+    local character = player.Character
+    if not character then return end
+    
+    if not isR15(character) then
+        local humanoid = character:FindFirstChildOfClass('Humanoid')
+        if not humanoid then return end
+        
+        local anim = Instance.new("Animation")
+        anim.AnimationId = "rbxassetid://35154961"
+        local k = humanoid:LoadAnimation(anim)
+        k:Play(0)
+        k:AdjustSpeed(1)
+    else
+        Fluent:Notify({
+            Title = "R6 Required",
+            Content = "This command requires the R6 rig type",
+            Duration = 5
+        })
+    end
+end
+
 ------------------------------------------------
 -- Core Logic (Loops & Events)
 ------------------------------------------------
@@ -535,6 +828,8 @@ RunService.Heartbeat:Connect(function(deltaTime)
     local selectedPlayer = getSelectedPlayer()
     if Options.LoopTeleportToggle and Options.LoopTeleportToggle.Value and selectedPlayer and selectedPlayer.Character and selectedPlayer.Character:FindFirstChild("HumanoidRootPart") then
         teleportToPlayer(selectedPlayer)
+    elseif Options.BringLoopToggle and Options.BringLoopToggle.Value and selectedPlayer and selectedPlayer.Character and selectedPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        bringPlayer(selectedPlayer)
     end
 end)
 
@@ -544,8 +839,6 @@ RunService.RenderStepped:Connect(function(delta)
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not humanoid or not hrp then return end
-
-    if Options.GodMode and Options.GodMode.Value then humanoid.Health = humanoid.MaxHealth end
     
     if Options.RainbowCharacter and Options.RainbowCharacter.Value then
         local hue = tick() % 5 / 5
@@ -581,6 +874,17 @@ RunService.RenderStepped:Connect(function(delta)
 
     if Options.Spin and Options.Spin.Value then hrp.CFrame = hrp.CFrame * CFrame.Angles(0, 50 * delta, 0) end
     
+    if Options.VehicleFly and Options.VehicleFly.Value and state.vehicleFlyBodyVelocity then
+        local moveVector = Vector3.new()
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveVector += camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveVector -= camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveVector -= camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveVector += camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveVector += Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveVector -= Vector3.new(0, 1, 0) end
+        state.vehicleFlyBodyVelocity.Velocity = (moveVector.Magnitude > 0 and moveVector.Unit or moveVector) * Options.VehicleFlySpeed.Value
+    end
+
     if not state.isSpectating then camera.CameraType = Enum.CameraType.Custom end
 end)
 
@@ -619,7 +923,7 @@ end)
 ------------------------------------------------
 
 local Window = Fluent:CreateWindow({
-    Title = "MOD INJECTOR v3.6 by Gemini",
+    Title = "MOD INJECTOR v4.2 by Gemini",
     SubTitle = "Home",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 500),
@@ -632,8 +936,16 @@ local Window = Fluent:CreateWindow({
 local MainTab = Window:AddTab({ Title = "Main", Icon = "home" })
 local PlayerSection = MainTab:AddSection("Player")
 
-PlayerSection:AddToggle("GodMode", { Title = "ゴッドモード", Description = "プレイヤーを無敵にします", Default = false })
+PlayerSection:AddToggle("GodMode", { Title = "ゴッドモード", Description = "プレイヤーを無敵にします", Default = false, Callback = function(value)
+    if state.isFirstLoad then return end
+    toggleGodMode(value)
+end })
 PlayerSection:AddToggle("InfiniteJump", { Title = "無限ジャンプ", Description = "ジャンプを無限にできるようにします", Default = false })
+PlayerSection:AddToggle("NoRagdoll", { Title = "No Ragdoll", Description = "キャラクターが倒れるのを防ぎます", Default = false, Callback = toggleNoRagdoll })
+PlayerSection:AddToggle("Invisible", { Title = "Invisible", Description = "他のプレイヤーから見えなくなります", Default = false, Callback = function(value)
+    if state.isFirstLoad then return end
+    toggleInvisible(value)
+end })
 PlayerSection:AddToggle("RainbowCharacter", { Title = "虹色キャラクター", Description = "キャラクターの色を虹色に変化させます", Default = false })
 PlayerSection:AddToggle("WalkOnWater", { Title = "ウォークオンウォーター", Description = "水の上を歩けるようにします", Default = false }):OnChanged(function(value)
     if not value and state.waterPart then
@@ -642,35 +954,67 @@ PlayerSection:AddToggle("WalkOnWater", { Title = "ウォークオンウォータ
     end
 end)
 
-PlayerSection:AddSlider("WalkSpeed", {
+local walkSpeedSlider = PlayerSection:AddSlider("WalkSpeed", {
     Title = "歩く速度", Min = 16, Max = 200, Default = 16, Rounding = 0,
     Callback = function(value) if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then player.Character.Humanoid.WalkSpeed = value end end
 })
+local walkSpeedInput = PlayerSection:AddInput("WalkSpeedInput", { Title = "", Default = "16", Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then walkSpeedSlider:SetValue(num) end end
+})
+walkSpeedSlider:OnChanged(function(value) if tonumber(walkSpeedInput.Value) ~= value then walkSpeedInput:SetValue(tostring(math.floor(value))) end end)
 
-PlayerSection:AddSlider("JumpPower", {
+local jumpPowerSlider = PlayerSection:AddSlider("JumpPower", {
     Title = "ジャンプ力", Min = 50, Max = 300, Default = 50, Rounding = 0,
     Callback = function(value) if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then player.Character.Humanoid.JumpPower = value end end
 })
+local jumpPowerInput = PlayerSection:AddInput("JumpPowerInput", { Title = "", Default = "50", Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then jumpPowerSlider:SetValue(num) end end
+})
+jumpPowerSlider:OnChanged(function(value) if tonumber(jumpPowerInput.Value) ~= value then jumpPowerInput:SetValue(tostring(math.floor(value))) end end)
 
-PlayerSection:AddSlider("CharacterSize", { Title = "キャラクターサイズ", Min = 0.5, Max = 3, Default = 1, Rounding = 2, Callback = setCharacterSize })
+local characterSizeSlider = PlayerSection:AddSlider("CharacterSize", { Title = "キャラクターサイズ", Min = 0.5, Max = 3, Default = 1, Rounding = 2, Callback = setCharacterSize })
+local characterSizeInput = PlayerSection:AddInput("CharacterSizeInput", { Title = "", Default = "1", Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then characterSizeSlider:SetValue(num) end end
+})
+characterSizeSlider:OnChanged(function(value) if tonumber(characterSizeInput.Value) ~= value then characterSizeInput:SetValue(tostring(value)) end end)
+
+PlayerSection:AddButton({ Title = "Reset Character", Callback = resetCharacter })
+
 
 local MovementSection = MainTab:AddSection("Movement")
 MovementSection:AddToggle("FreeFly", { Title = "FreeFly", Description = "空中を自由に飛行します (W/A/S/D, Space, L-Shift)", Default = false }):OnChanged(function(value)
     if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then player.Character.Humanoid.PlatformStand = value end
 end)
-MovementSection:AddSlider("FreeFlySpeed", { Title = "FreeFly 速度", Min = 10, Max = 500, Default = 50, Rounding = 0 })
+local freeFlySpeedSlider = MovementSection:AddSlider("FreeFlySpeed", { Title = "FreeFly 速度", Min = 10, Max = 500, Default = 50, Rounding = 0 })
+local freeFlySpeedInput = MovementSection:AddInput("FreeFlySpeedInput", { Title = "", Default = "50", Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then freeFlySpeedSlider:SetValue(num) end end
+})
+freeFlySpeedSlider:OnChanged(function(value) if tonumber(freeFlySpeedInput.Value) ~= value then freeFlySpeedInput:SetValue(tostring(math.floor(value))) end end)
+
 MovementSection:AddToggle("Noclip", { Title = "Noclip", Description = "壁を通り抜けられるようにします", Default = false }):OnChanged(function(value)
     if not value and player.Character then
         for _, part in ipairs(player.Character:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end
     end
 end)
+MovementSection:AddToggle("Swim", { Title = "Swim", Description = "空中を泳ぎます", Default = false, Callback = function(value)
+    if state.isFirstLoad then return end
+    toggleSwim(value)
+end })
+
 
 local MiscSection = MainTab:AddSection("Misc")
 MiscSection:AddToggle("ClickTeleport", { Title = "クリックテレポート", Description = "左Ctrlを押しながらクリックした場所にテレポートします", Default = false })
 MiscSection:AddToggle("FForward", { Title = "F-Forward", Description = "Fキーを押している間、前進し続けます", Default = false })
-MiscSection:AddSlider("FForwardSpeed", { Title = "F-Forward 速度", Min = 1, Max = 10, Default = 2, Rounding = 1 })
+local fForwardSpeedSlider = MiscSection:AddSlider("FForwardSpeed", { Title = "F-Forward 速度", Min = 1, Max = 10, Default = 2, Rounding = 1 })
+local fForwardSpeedInput = MiscSection:AddInput("FForwardSpeedInput", { Title = "", Default = "2", Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then fForwardSpeedSlider:SetValue(num) end end
+})
+fForwardSpeedSlider:OnChanged(function(value) if tonumber(fForwardSpeedInput.Value) ~= value then fForwardSpeedInput:SetValue(tostring(value)) end end)
+
 MiscSection:AddToggle("Spin", { Title = "Spin", Description = "キャラクターを回転させます", Default = false })
-MiscSection:AddToggle("PlayerESP", { Title = "プレイヤーESP", Description = "他のプレイヤーの位置を表示します", Default = false, Callback = updateESP })
+MiscSection:AddToggle("PlayerESP", { Title = "プレイヤーESP", Description = "他のプレイヤーの位置を表示します", Default = false, Callback = toggleCombinedPlayerESP })
+MiscSection:AddToggle("NoPrompts", { Title = "No Prompts", Description = "ゲーム内の購入プロンプトを無効にします", Default = false, Callback = toggleNoPrompts })
+
 
 -- テレポートタブ
 local TeleportTab = Window:AddTab({ Title = "Teleport", Icon = "shuffle" })
@@ -686,21 +1030,38 @@ end})
 TeleportActionsSection:AddButton({ Title = "選択したプレイヤーにテレポート", Callback = function() local t = getSelectedPlayer() if t then teleportToPlayer(t) else Fluent:Notify({Title="エラー",Content="プレイヤーが選択されていません。"}) end end })
 TeleportActionsSection:AddButton({ Title = "選択したプレイヤーを自分に呼ぶ", Callback = function() local t = getSelectedPlayer() if t then bringPlayer(t) else Fluent:Notify({Title="エラー",Content="プレイヤーが選択されていません。"}) end end })
 TeleportActionsSection:AddToggle("SpectateToggle", { Title = "観戦", Default = false, Callback = function(v) local t = getSelectedPlayer() if t then spectatePlayer(t, v) else Fluent:Notify({Title="エラー",Content="プレイヤーが選択されていません。"}) end end})
-TeleportActionsSection:AddToggle("LoopTeleportToggle", { Title = "ループテレポート", Default = false })
+local loopTeleportToggle = TeleportActionsSection:AddToggle("LoopTeleportToggle", { Title = "ループテレポート", Default = false })
+local bringLoopToggle = TeleportActionsSection:AddToggle("BringLoopToggle", { Title = "ループブリング", Default = false })
 TeleportActionsSection:AddToggle("TeleportPositionToggle", { Title = "ループ位置: 後ろ / 正面", Description = "トグルがONの時、正面にテレポートします", Default = false })
+TeleportActionsSection:AddToggle("AntiTeleportToggle", { Title = "Enable Anti-Teleport", Default = false, Callback = function(v) if v then cutGrass_ActivateAntiTeleport(player.Character) else cutGrass_DeactivateAntiTeleport() end end })
+
+loopTeleportToggle:OnChanged(function()
+    if Options.LoopTeleportToggle.Value and Options.BringLoopToggle.Value then
+        Options.BringLoopToggle:SetValue(false)
+    end
+end)
+bringLoopToggle:OnChanged(function()
+    if Options.BringLoopToggle.Value and Options.LoopTeleportToggle.Value then
+        Options.LoopTeleportToggle:SetValue(false)
+    end
+end)
+
 
 -- CutGrassタブ
 local CutGrassTab = Window:AddTab({ Title = "CutGrass", Icon = "leaf" })
 local CgHacksSection = CutGrassTab:AddSection("Hacks")
 CgHacksSection:AddToggle("cutGrass_AutoCutGrassToggle", { Title = "Auto Cut Grass", Default = false, Callback = cutGrass_SetAutoCut })
 CgHacksSection:AddToggle("cutGrass_ToggleGrass", { Title = "Toggle Grass Visibility", Default = true, Callback = cutGrass_ToggleGrassVisibility })
-CgHacksSection:AddToggle("cutGrass_AntiTeleportToggle", { Title = "Enable Anti-Teleport", Default = false, Callback = function(v) if v then cutGrass_ActivateAntiTeleport(player.Character) else cutGrass_DeactivateAntiTeleport() end end })
-CgHacksSection:AddSlider("cutGrass_HitboxSizeSlider", { Title = "Hitbox Size", Min = 1, Max = 50, Default = 1, Rounding = 0, Callback = function(v)
+local hitboxSlider = CgHacksSection:AddSlider("cutGrass_HitboxSizeSlider", { Title = "Hitbox Size", Min = 1, Max = 50, Default = 1, Rounding = 0, Callback = function(v)
     cutGrass_UpdateHitbox()
     if state.cutGrass_HitboxLoop then state.cutGrass_HitboxLoop:Disconnect(); state.cutGrass_HitboxLoop = nil end
     if v > 1 then state.cutGrass_HitboxLoop = RunService.Heartbeat:Connect(cutGrass_UpdateHitbox) end
 end})
-CgHacksSection:AddSlider("cutGrass_WalkSpeedSlider", { Title = "Walk Speed", Min = 16, Max = 100, Default = 16, Rounding = 0, Callback = cutGrass_SetWalkSpeed })
+local hitboxInput = CgHacksSection:AddInput("cutGrass_HitboxSizeInput", { Title = "", Default = "1", Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then hitboxSlider:SetValue(num) end end
+})
+hitboxSlider:OnChanged(function(value) if tonumber(hitboxInput.Value) ~= value then hitboxInput:SetValue(tostring(math.floor(value))) end end)
+
 
 local CgChestsSection = CutGrassTab:AddSection("Chests")
 local cgLootZoneDropdown = CgChestsSection:AddDropdown("cutGrass_LootZoneDropdown", { Title = "Select Loot Zone", Values = cutGrass_GetAllLootZones(), Default = "Main", Callback = function()
@@ -716,14 +1077,42 @@ end})
 
 local CgVisualsSection = CutGrassTab:AddSection("Visuals")
 CgVisualsSection:AddToggle("cutGrass_ChestESPToggle", { Title = "Chest ESP", Default = false, Callback = cutGrass_ToggleChestESP })
-CgVisualsSection:AddToggle("cutGrass_PlayerESPToggle", { Title = "Player ESP", Default = false, Callback = cutGrass_TogglePlayerESP })
 
+-- Vehicleタブ
+local VehicleTab = Window:AddTab({ Title = "Vehicle", Icon = "bus" })
+local VehicleFlySection = VehicleTab:AddSection("Vehicle Fly")
+VehicleFlySection:AddToggle("VehicleFly", { Title = "Vehicle Fly", Description = "乗り物で飛行します", Default = false, Callback = toggleVehicleFly })
+local vehicleFlySpeedSlider = VehicleFlySection:AddSlider("VehicleFlySpeed", { Title = "Fly Speed", Min = 10, Max = 1500, Default = 50, Rounding = 0 })
+local vehicleFlySpeedInput = VehicleFlySection:AddInput("VehicleFlySpeedInput", { Title = "", Default = "50", Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then vehicleFlySpeedSlider:SetValue(num) end end
+})
+vehicleFlySpeedSlider:OnChanged(function(value) if tonumber(vehicleFlySpeedInput.Value) ~= value then vehicleFlySpeedInput:SetValue(tostring(math.floor(value))) end end)
+
+
+-- Emotesタブ
+local EmotesTab = Window:AddTab({ Title = "Emotes", Icon = "smile" })
+local EmotesSection = EmotesTab:AddSection("Emotes")
+EmotesSection:AddToggle("emote_jerk", { Title = "Jerk", Default = false, Callback = toggleJerk })
+EmotesSection:AddButton({ Title = "Headthrow (R6 Only)", Callback = playHeadthrow })
 
 -- ワールドタブ
 local WorldTab = Window:AddTab({ Title = "World", Icon = "world" })
+local VisualsSection = WorldTab:AddSection("Visuals")
+VisualsSection:AddToggle("Xray", { Title = "X-Ray", Description = "壁を透かして見ます", Default = false, Callback = toggleXray })
+
 local LightingSection = WorldTab:AddSection("Lighting")
-LightingSection:AddSlider("FogEnd", { Title = "霧の距離", Min = 100, Max = 100000, Default = Lighting.FogEnd, Rounding = 0, Callback = function(v) Lighting.FogEnd = v end })
-LightingSection:AddSlider("TimeOfDay", { Title = "時間", Min = 0, Max = 1440, Default = Lighting:GetMinutesAfterMidnight(), Rounding = 0, Callback = function(v) Lighting:SetMinutesAfterMidnight(v) end })
+local fogEndSlider = LightingSection:AddSlider("FogEnd", { Title = "霧の距離", Min = 100, Max = 100000, Default = Lighting.FogEnd, Rounding = 0, Callback = function(v) Lighting.FogEnd = v end })
+local fogEndInput = LightingSection:AddInput("FogEndInput", { Title = "", Default = tostring(Lighting.FogEnd), Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then fogEndSlider:SetValue(num) end end
+})
+fogEndSlider:OnChanged(function(value) if tonumber(fogEndInput.Value) ~= value then fogEndInput:SetValue(tostring(math.floor(value))) end end)
+
+local timeOfDaySlider = LightingSection:AddSlider("TimeOfDay", { Title = "時間", Min = 0, Max = 1440, Default = Lighting:GetMinutesAfterMidnight(), Rounding = 0, Callback = function(v) Lighting:SetMinutesAfterMidnight(v) end })
+local timeOfDayInput = LightingSection:AddInput("TimeOfDayInput", { Title = "", Default = tostring(math.floor(Lighting:GetMinutesAfterMidnight())), Numeric = true, Finished = true,
+    Callback = function(value) local num = tonumber(value) if num then timeOfDaySlider:SetValue(num) end end
+})
+timeOfDaySlider:OnChanged(function(value) if tonumber(timeOfDayInput.Value) ~= value then timeOfDayInput:SetValue(tostring(math.floor(value))) end end)
+
 
 -- 設定タブ
 local SettingsTab = Window:AddTab({ Title = "Settings", Icon = "settings" })
@@ -744,25 +1133,58 @@ local initialPlayerNames = {}
 for _, p in ipairs(Players:GetPlayers()) do if p ~= player then table.insert(initialPlayerNames, p.Name) end end
 playerDropdown:SetValues(initialPlayerNames)
 
-player.CharacterAdded:Connect(function(character)
-    task.wait(1)
-    local humanoid = character:WaitForChild("Humanoid")
-    
+local function applyCharacterSettings(character)
+    if not character then return end
+    task.wait(1) -- Wait for character to fully load
+    local humanoid = character:WaitForChild("Humanoid", 5)
+    if not humanoid then return end
+
     -- Main Features
-    if Options.PlayerESP and Options.PlayerESP.Value then updateESP(true) end
+    if not state.isFirstLoad and Options.GodMode and Options.GodMode.Value then toggleGodMode(true) end
+    if Options.PlayerESP and Options.PlayerESP.Value then toggleCombinedPlayerESP(true) end
     if Options.WalkSpeed and Options.WalkSpeed.Value then humanoid.WalkSpeed = Options.WalkSpeed.Value end
     if Options.JumpPower and Options.JumpPower.Value then humanoid.JumpPower = Options.JumpPower.Value end
     if Options.Noclip and Options.Noclip.Value then
          for _, part in ipairs(character:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end
     end
+    if Options.NoRagdoll and Options.NoRagdoll.Value then toggleNoRagdoll(true) end
+    if Options.Invisible and Options.Invisible.Value then Options.Invisible:SetValue(false) end -- Disable on respawn
+    if not state.isFirstLoad and Options.Swim and Options.Swim.Value then toggleSwim(true) end
+
     state.isSpectating = false
     if Options.WalkOnWater and Options.WalkOnWater.Value and state.waterPart then state.waterPart:Destroy(); state.waterPart = nil end
 
     -- CutGrass Features
-    if Options.cutGrass_AntiTeleportToggle and Options.cutGrass_AntiTeleportToggle.Value then cutGrass_ActivateAntiTeleport(character) end
+    if Options.AntiTeleportToggle and Options.AntiTeleportToggle.Value then cutGrass_ActivateAntiTeleport(character) end
     if Options.cutGrass_HitboxSizeSlider and Options.cutGrass_HitboxSizeSlider.Value > 1 then cutGrass_UpdateHitbox() end
-    if Options.cutGrass_WalkSpeedSlider and Options.cutGrass_WalkSpeedSlider.Value then cutGrass_SetWalkSpeed(Options.cutGrass_WalkSpeedSlider.Value) end
-end)
+    
+    -- Emote Features
+    if Options.emote_jerk and Options.emote_jerk.Value then
+        Options.emote_jerk:SetValue(false) -- Stop emote on respawn
+    end
+end
+
+local function applyGameSettings()
+    if Options.NoPrompts and Options.NoPrompts.Value then 
+        toggleNoPrompts(true) 
+    else 
+        toggleNoPrompts(false) 
+    end
+    if Options.Xray and Options.Xray.Value then
+        toggleXray(true)
+    end
+end
+
+player.CharacterAdded:Connect(applyCharacterSettings)
+
+if player.Character then
+    applyCharacterSettings(player.Character)
+end
+
+applyGameSettings()
+
+state.isFirstLoad = false
+
 
 Fluent:Notify({
     Title = "Mod Injector Fluent",
